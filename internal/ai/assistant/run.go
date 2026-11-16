@@ -253,11 +253,13 @@ func (s *Service) sendMessage(ctx context.Context, sid uuid.UUID, in AssistantMe
 	if err := s.ai.Reserve(ctx, p.WorkspaceID, "assistant"); err != nil {
 		return ai.APIError(err)
 	}
-	if !s.begin(sid) {
-		return errBusy
+	lease, err := s.begin(ctx, p.WorkspaceID, sid)
+	if err != nil {
+		return err
 	}
-	defer s.end(sid)
+	defer s.end(ctx, p.WorkspaceID, sid, lease)
 	rc := s.newRun(ctx, p, in.Context)
+	rc.sid, rc.lease = sid, lease
 
 	// Page context: the open ticket is described once, when the message is sent.
 	prefix := ""
@@ -392,6 +394,12 @@ func (s *Service) loop(ctx context.Context, rc *runCtx, sid uuid.UUID, emit emit
 		if err != nil {
 			return httpx.Wrap(err)
 		}
+		if outsideText(turns) {
+			rc.outside = true
+		}
+		if err := s.renew(ctx, rc); err != nil {
+			return err
+		}
 		resp, err := s.ai.AssistantTurn(ctx, p.WorkspaceID, &p.UserID, ai.ChatRequest{System: system, Turns: chatTurns(turns), Tools: specs, MaxTokens: 2048},
 			func(t string) { emit("text", map[string]string{"text": t}) })
 		if err != nil {
@@ -422,7 +430,7 @@ func (s *Service) loop(ctx context.Context, rc *runCtx, sid uuid.UUID, emit emit
 				}
 			}
 			emit("tool", st)
-			if t.Write && prop != nil {
+			if rc.needsApproval(t) && prop != nil {
 				st.Status, st.Summary = "error", "Waits for the change before it"
 				results = append(results, storedResult{ToolResult: ai.ToolResult{CallID: c.ID, IsError: true,
 					Content: "Not run: one change waits for approval at a time. Propose it again after the user decides on the first."}})
@@ -430,8 +438,11 @@ func (s *Service) loop(ctx context.Context, rc *runCtx, sid uuid.UUID, emit emit
 				emit("tool", st)
 				continue
 			}
-			if !t.Write {
+			if !rc.needsApproval(t) {
 				out, err := t.Read(ctx, rc, c.Input)
+				if bringsOutsideText(t.Name) {
+					rc.outside = true // the calls after this one read its answer
+				}
 				st.Label = doneLabel
 				if err != nil {
 					st.Status, st.Summary = "error", toolErrorText(err)
@@ -463,6 +474,9 @@ func (s *Service) loop(ctx context.Context, rc *runCtx, sid uuid.UUID, emit emit
 				a, out, runErr, err := s.runAuto(ctx, rc, sid, seq, c, t, raw, pv)
 				if err != nil {
 					return httpx.Wrap(err)
+				}
+				if bringsOutsideText(t.Name) {
+					rc.outside = true // the calls after this one read its answer
 				}
 				st.ActionID, st.Auto, st.Preview, st.Label = &a.ID, true, &pv, doneLabel
 				if runErr != nil {
@@ -586,10 +600,11 @@ func (s *Service) decide(ctx context.Context, id uuid.UUID, in DecisionInput, em
 		}
 		return httpx.Wrap(err)
 	}
-	if !s.begin(sid) {
-		return errBusy
+	lease, err := s.begin(ctx, p.WorkspaceID, sid)
+	if err != nil {
+		return err
 	}
-	defer s.end(sid)
+	defer s.end(ctx, p.WorkspaceID, sid, lease)
 	status := "approved"
 	if in.Decision == "deny" {
 		status = "denied"
@@ -599,6 +614,7 @@ func (s *Service) decide(ctx context.Context, id uuid.UUID, in DecisionInput, em
 		return err
 	}
 	rc := s.newRun(ctx, p, nil)
+	rc.sid, rc.lease = sid, lease
 	t := rc.lookup(ctx, a.Tool)
 	st := Step{ID: a.CallID, Tool: a.Tool, Label: a.Preview.Title, ActionID: &a.ID}
 	content := "The user declined this change, so it was not made. Do not retry it unless they ask."

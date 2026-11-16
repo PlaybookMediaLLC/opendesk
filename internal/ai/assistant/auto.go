@@ -19,7 +19,8 @@ import (
 // (auto_tools). They run on the same path as an approved change, as the user, and are
 // recorded and audited like one. Whatever the settings say, these always ask: a change
 // whose preview reaches someone outside (external), api_change, and every built-in write
-// that is not one of hd.AssistantAutoTools.
+// that is not one of hd.AssistantAutoTools. Nothing runs without asking once the
+// conversation holds outside text (taint.go).
 
 // maxAutoPerMessage bounds the changes that run without asking for one message from the
 // user; past it, writes are proposals again.
@@ -50,7 +51,7 @@ func alwaysAsks(t *tool, pv Preview) bool {
 // mayAuto says whether a proposed change runs without asking. fresh reads the settings
 // again (just before Apply); otherwise the run's copy, from when it started, is used.
 func (rc *runCtx) mayAuto(ctx context.Context, t *tool, pv Preview, fresh bool) bool {
-	if alwaysAsks(t, pv) {
+	if rc.outside || alwaysAsks(t, pv) {
 		return false
 	}
 	if t.ext != nil {

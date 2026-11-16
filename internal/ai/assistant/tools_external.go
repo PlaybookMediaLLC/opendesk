@@ -20,8 +20,10 @@ import (
 
 // Connected tools come from the workspace's integrations (MCP servers). They run as
 // the workspace's connection; a tool runs as a read only while its server marks it
-// read-only and no admin set it to ask first. Every other tool is a write and waits for
-// the user's approval like every other change.
+// read-only, no admin set it to ask first, and the conversation holds no outside text
+// (taint.go). Every other call is proposed and waits for the user's approval like every
+// other change. A connected write counts as reaching outside the workspace (Preview.External)
+// unless its server marks it as staying in a closed system (openWorldHint false).
 
 // toolFailure is a tool that ran and failed: Summary is safe for the panel, Content
 // (already inside a data block) is what the model reads.
@@ -90,21 +92,27 @@ func (rc *runCtx) lookup(ctx context.Context, name string) *tool {
 func externalTool(x integrations.Tool) *tool {
 	t := &tool{Name: x.Name, Description: x.Description, Schema: x.Schema, Write: !x.ReadOnly, MinRole: auth.RoleAgent,
 		Active: "Checking " + x.Integration, Done: "Checked " + x.Integration, ext: &x}
+	// Apply runs an approved call, a read proposed in a conversation with outside text
+	// included, and one the user approved while the tool asked first.
+	t.Apply = applyExternal(x)
+	t.Propose = proposeExternal(x)
 	if x.ReadOnly {
 		t.Read = func(ctx context.Context, rc *runCtx, in json.RawMessage) (output, error) {
-			text, err := callExternal(ctx, rc, x, x.IntegrationID, x.Remote, in, integrations.CallRead)
+			text, err := callExternal(ctx, rc, x, x.IntegrationID, x.Remote, in, integrations.CallRead, "")
 			if err != nil {
 				return output{}, err
 			}
 			return output{Content: block(x.Name, clip(text, 20000)), Summary: "Read from " + x.Integration, Refs: linkRefs(text, x.Hosts, 3)}, nil
 		}
-		// Apply stays: a call the user approved while the tool asked first still runs.
-		t.Apply = applyExternal(x)
 		return t
 	}
 	t.Active, t.Done = "Working in "+x.Integration, "Done in "+x.Integration
-	t.Apply = applyExternal(x)
-	t.Propose = func(ctx context.Context, rc *runCtx, in json.RawMessage) (any, Preview, error) {
+	return t
+}
+
+// proposeExternal validates a connected call's arguments and describes it for approval.
+func proposeExternal(x integrations.Tool) func(ctx context.Context, rc *runCtx, in json.RawMessage) (any, Preview, error) {
+	return func(ctx context.Context, rc *runCtx, in json.RawMessage) (any, Preview, error) {
 		var fields map[string]any
 		if len(in) == 0 || string(in) == "null" {
 			in = json.RawMessage(`{}`)
@@ -124,7 +132,6 @@ func externalTool(x integrations.Tool) *tool {
 		}
 		return args, externalPreview(x, fields, in), nil
 	}
-	return t
 }
 
 // applyExternal runs an approved connected tool call, or one that runs without asking
@@ -139,7 +146,7 @@ func applyExternal(x integrations.Tool) func(ctx context.Context, rc *runCtx, w 
 		if autoRunning(ctx) {
 			mode = integrations.CallAuto
 		}
-		text, err := callExternal(ctx, rc, x, a.IntegrationID, a.Remote, a.input(), mode)
+		text, err := callExternal(ctx, rc, x, a.IntegrationID, a.Remote, a.input(), mode, key)
 		if err != nil {
 			return output{}, err
 		}
@@ -167,11 +174,12 @@ func applyExternal(x integrations.Tool) func(ctx context.Context, rc *runCtx, w 
 // callExternal runs one connected tool and returns its text. The server's own words
 // stay inside a data block, both for results and for errors. mode says why it may run;
 // the integration checks it against how the workspace has the tool now.
-func callExternal(ctx context.Context, rc *runCtx, x integrations.Tool, iid uuid.UUID, remote string, in json.RawMessage, mode integrations.CallMode) (string, error) {
+// key is the change's idempotency key, sent with every attempt ("" for a read).
+func callExternal(ctx context.Context, rc *runCtx, x integrations.Tool, iid uuid.UUID, remote string, in json.RawMessage, mode integrations.CallMode, key string) (string, error) {
 	if len(in) == 0 || string(in) == "null" {
 		in = json.RawMessage(`{}`)
 	}
-	res, err := integrations.For(rc.svc.d).Call(ctx, rc.p.WorkspaceID, iid, remote, in, mode)
+	res, err := integrations.For(rc.svc.d).CallKeyed(ctx, rc.p.WorkspaceID, iid, remote, in, mode, key)
 	if err != nil {
 		var re *integrations.RemoteError
 		if errors.As(err, &re) {
@@ -194,8 +202,10 @@ func callExternal(ctx context.Context, rc *runCtx, x integrations.Tool, iid uuid
 // externalPreview summarizes a connected tool call (at most 12 fields, values cut
 // short) and carries its complete arguments, raw being the JSON text Apply sends.
 // Omitted counts the fields the summary leaves out and Clipped marks a value cut short.
+// A call to a tool its server does not mark as closed-world reaches outside the workspace
+// (External), so it always asks.
 func externalPreview(x integrations.Tool, fields map[string]any, raw json.RawMessage) Preview {
-	pv := Preview{Title: x.Integration + ": " + x.Title, System: x.Integration, Arguments: indentJSON(raw)}
+	pv := Preview{Title: x.Integration + ": " + x.Title, System: x.Integration, Arguments: indentJSON(raw), External: x.OpenWorld}
 	keys := make([]string, 0, len(fields))
 	for k := range fields {
 		keys = append(keys, k)

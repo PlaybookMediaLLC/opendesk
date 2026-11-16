@@ -230,7 +230,8 @@ func TestConnectedAutoTools(t *testing.T) {
 	srv := httptest.NewServer(fl)
 	defer srv.Close()
 	tools := `[{"name":"list_issues","description":"Search issues","input_schema":{"type":"object"},"read_only":true},
-		{"name":"create_issue","title":"Create issue","input_schema":{"type":"object","properties":{"title":{"type":"string"}}},"read_only":false}]`
+		{"name":"create_issue","title":"Create issue","input_schema":{"type":"object","properties":{"title":{"type":"string"}}},"read_only":false,
+		 "destructive_hint":false,"open_world_hint":false}]`
 	iid := ids.New()
 	if _, err := e.D.DB.Pool.Exec(e.Ctx, `INSERT INTO integrations (id, workspace_id, provider, slug, name, url, auth_type, status, tools, auto_tools)
 		VALUES ($1,$2,'linear','linear','Linear',$3,'none','connected',$4,'{create_issue}')`, iid, e.WS.ID, srv.URL+"/mcp", tools); err != nil {
@@ -253,6 +254,8 @@ func TestConnectedAutoTools(t *testing.T) {
 	if _, err := e.D.DB.Pool.Exec(e.Ctx, `UPDATE integrations SET ask_tools = '{create_issue}' WHERE id = $1`, iid); err != nil {
 		t.Fatal(err)
 	}
+	// (A new conversation each time: the first one now holds the tool's answer, outside text.)
+	sid = e.session(agent)
 	e.M.queue(step{tool: "linear__create_issue", args: map[string]any{"title": "Second"}})
 	_, evs, _ = e.stream("/v1/assistant/sessions/"+sid+"/messages", agent, map[string]any{"text": "Another one"})
 	approvalOf(t, evs)
@@ -260,6 +263,7 @@ func TestConnectedAutoTools(t *testing.T) {
 	if _, err := e.D.DB.Pool.Exec(e.Ctx, `UPDATE integrations SET ask_tools = '{}' WHERE id = $1`, iid); err != nil {
 		t.Fatal(err)
 	}
+	sid = e.session(agent)
 	e.M.queue(step{tool: "linear__create_issue", args: map[string]any{"title": "Third"}, before: func() {
 		_, _ = e.D.DB.Pool.Exec(e.Ctx, `UPDATE integrations SET auto_tools = '{}' WHERE id = $1`, iid)
 	}})
