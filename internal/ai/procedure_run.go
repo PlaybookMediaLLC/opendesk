@@ -1,9 +1,11 @@
 package ai
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"html"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,8 +25,11 @@ import (
 
 // Procedure runs (contracts/ai.md "Automations"): an automation's run_procedure action has
 // Ollie work one ticket for the team by a procedure's instructions. Nothing it writes
-// reaches the customer: it reads, leaves internal notes, raises priority or severity, adds
-// labels, and uses connected tools an admin set to run without asking.
+// reaches the customer: it reads, leaves internal notes, raises priority or severity and
+// adds labels. Its context always holds text from outside the workspace (the customer's
+// messages, call transcripts) and no person is there to approve, so no connected tool runs:
+// a connected write an admin set to run without asking is suggested to the team instead,
+// with its exact arguments, in one internal note at the end of the run.
 
 const (
 	procedureMaxTurns  = 8
@@ -52,11 +57,11 @@ const procedureSystem = `You are Ollie, the AI teammate in a company's helpdesk.
 ## What you do
 - Read the ticket in <ticket>, its thread in <ticket_thread> (customer messages, team replies and internal notes) and, when it has calls, <calls>.
 - Follow <procedure_instructions>. Do only what they ask, with the tools you have. When the procedure says it does not apply to this ticket, or the ticket does not need it, do nothing and say so in one short line.
-- Nothing you write reaches the customer. You cannot reply to them: you leave internal notes for the team, set priority or severity, add labels, and use the company's connected tools.
-- Before creating something in a connected tool, check the thread and its notes: when it was already done for this ticket (a link in a note, for example), do not do it again.
-- When you create something in a connected tool, leave an internal note with add_note that says what you did, with the link.
+- Nothing you write reaches the customer. You cannot reply to them: you leave internal notes for the team, set priority or severity, and add labels.
+- Connected tools (named like linear__create_issue) do not run here: calling one suggests that exact call to the team, who make it themselves. The suggestions go to the team in one note at the end of the run, so do not write a note about them.
+- Before suggesting something in a connected tool, check the thread and its notes: when it was already done for this ticket (a link in a note, for example), do not suggest it again.
 - Use facts from the ticket, the thread, the knowledge and tool results only. Never invent order numbers, account details or links.
-- You have at most 5 changes in this run (notes, ticket updates and connected tool writes together).
+- You have at most 5 changes in this run (notes and ticket updates together) and at most 5 suggestions.
 - End with one or two plain sentences on what you did, or that there was nothing to do.
 ` + writingStyle + `
 
@@ -144,16 +149,28 @@ type procedureRun struct {
 	tools  map[string]procedureTool
 	used   []string
 	writes int
+	// suggested are the connected calls suggested to the team, in order.
+	suggested []suggestion
 	// noSeverity: the workspace does not use severity, so update_ticket neither offers nor sets it.
 	noSeverity bool
 }
 
-// procedureTool is a tool offered to the model in a run.
+// procedureTool is a tool offered to the model in a run. ext is a connected write, which
+// is only suggested.
 type procedureTool struct {
 	spec  ToolSpec
 	write bool
 	ext   *integrations.Tool
 }
+
+// suggestion is a connected call a run suggests to the team instead of running it.
+type suggestion struct {
+	Tool string // "Linear: create_issue"
+	Args string // the arguments as the model wrote them, indented
+}
+
+// procedureMaxSuggestions bounds the connected calls one run suggests.
+const procedureMaxSuggestions = 5
 
 // RunProcedure runs the procedure once for this automation, ticket and trigger. It does
 // nothing when AI is off, the procedure is gone or off, the workspace ran 200 this hour,
@@ -201,6 +218,11 @@ func (s *Service) RunProcedure(ctx context.Context, a jobs.AIProcedureRunArgs) e
 	}
 	r := &procedureRun{s: s, a: a, runID: runID, proc: proc, auto: auto, tc: tc}
 	outcome, err := r.run(ctx, set)
+	if serr := r.noteSuggestions(ctx); serr != nil {
+		s.d.Log.Warn("procedure suggestions note", "ticket_id", a.TicketID, "err", serr)
+	} else if len(r.suggested) > 0 && err == nil {
+		outcome = procedureDone
+	}
 	if err != nil && r.writes == 0 {
 		// Nothing was written: the claim goes, so the job's retry runs it, and a skip
 		// (skippable) leaves the ticket as it was.
@@ -268,7 +290,7 @@ func (r *procedureRun) record(ctx context.Context, outcome string) error {
 		}
 		_, err := domain.LogActivity(ctx, tx, r.a.WorkspaceID, r.a.TicketID, "ai", nil, "ai_procedure_ran", map[string]any{
 			"procedure_id": r.proc.ID.String(), "name": r.proc.Name, "automation_id": r.a.AutomationID.String(), "automation_name": r.auto,
-			"tools": used, "writes": r.writes, "outcome": outcome})
+			"tools": used, "writes": r.writes, "suggested": len(r.suggested), "outcome": outcome})
 		if db.IsNotFound(err) {
 			return nil // the ticket was deleted meanwhile
 		}
@@ -320,8 +342,10 @@ func (r *procedureRun) run(ctx context.Context, set hd.AISettings) (string, erro
 	return procedureNothing, nil
 }
 
-// offer lists the run's tools: knowledge and wiki reads, notes and ticket updates, and
-// connected tools that are reads or run without asking.
+// offer lists the run's tools: knowledge and wiki reads, notes and ticket updates, and the
+// connected writes an admin set to run without asking, offered to be suggested. Connected
+// reads are not offered: their arguments would leave the workspace, chosen after reading
+// outside text, with nobody to approve them.
 func (r *procedureRun) offer(ctx context.Context) []ToolSpec {
 	r.tools = map[string]procedureTool{}
 	add := func(t procedureTool) { r.tools[t.spec.Name] = t }
@@ -350,14 +374,15 @@ func (r *procedureRun) offer(ctx context.Context) []ToolSpec {
 		r.s.d.Log.Warn("procedure connected tools unavailable", "workspace_id", r.a.WorkspaceID, "err", err)
 	}
 	for _, x := range ext {
-		if !x.ReadOnly && !x.AutoRun {
-			continue // other writes wait for a person's approval, which no one gives here
+		if x.ReadOnly || !(x.AutoRun || x.OnAutoTools) {
+			continue // reads and writes an admin did not choose are not offered
 		}
 		if _, taken := r.tools[x.Name]; taken {
 			continue
 		}
 		x := x
-		add(procedureTool{write: !x.ReadOnly, ext: &x, spec: ToolSpec{Name: x.Name, Description: clip(x.Description, 1000), Schema: cloneSchema(x.Schema)}})
+		add(procedureTool{ext: &x, spec: ToolSpec{Name: x.Name, Description: clip(x.Description+" (Suggested to the team; it does not run here.)", 1000),
+			Schema: cloneSchema(x.Schema)}})
 	}
 	names := make([]string, 0, len(r.tools))
 	for n := range r.tools {
@@ -439,7 +464,7 @@ func (r *procedureRun) call(ctx context.Context, name string, in json.RawMessage
 		}
 		return r.updateTicket(ctx, text("priority"), severity, args["add_labels"])
 	}
-	return r.callConnected(ctx, *t.ext, in)
+	return r.suggest(*t.ext, in), false, nil
 }
 
 // addNote leaves an internal note, sanitized like every note, as Ollie.
@@ -536,46 +561,53 @@ func (r *procedureRun) updateTicket(ctx context.Context, priority, severity stri
 	return "Updated: " + strings.Join(changes, ", ") + ".", false, nil
 }
 
-// callConnected runs a connected tool: a read, or a write an admin lets run without asking.
-// Something a write creates, linked on the provider's hosts, is linked to the ticket.
-func (r *procedureRun) callConnected(ctx context.Context, x integrations.Tool, in json.RawMessage) (string, bool, error) {
+// suggest records a connected call for the team instead of running it. Its arguments are
+// kept as the model wrote them (a JSON object, at most 64 KB) and shown in the note.
+func (r *procedureRun) suggest(x integrations.Tool, in json.RawMessage) string {
 	if len(in) == 0 || string(in) == "null" {
 		in = json.RawMessage(`{}`)
 	}
-	mode := integrations.CallRead
-	if !x.ReadOnly {
-		mode = integrations.CallAuto
-		r.writes++
-	}
-	text, isErr, err := r.s.connectedTools().Call(ctx, r.a.WorkspaceID, x.IntegrationID, x.Remote, in, mode)
-	if err != nil {
-		return block("tool_output", []string{"tool", x.Name}, "The tool could not run: "+untrusted(clip(err.Error(), 300))), true, nil
-	}
-	out := block("tool_output", []string{"tool", x.Name}, untrusted(clip(firstNonEmpty(text, "(no content)"), agentToolOutChars)))
-	if isErr || x.ReadOnly || !integrations.Creates(x.Remote) {
-		return out, isErr, nil
-	}
-	links := integrations.LinksOn(text, x.Hosts, 1)
-	if len(links) == 0 {
-		return out, false, nil
-	}
 	var fields map[string]any
-	_ = json.Unmarshal(in, &fields)
-	title := ""
-	for _, k := range []string{"title", "name", "summary", "subject"} {
-		if v, ok := fields[k].(string); ok && strings.TrimSpace(v) != "" {
-			title = v
-			break
-		}
+	if json.Unmarshal(in, &fields) != nil || fields == nil || len(in) > 64<<10 {
+		return "Not suggested: the arguments must be a JSON object of at most 64 KB."
 	}
-	err = r.s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
-		return r.s.connectedTools().LinkTicketAsAI(ctx, tx, r.a.WorkspaceID, r.a.TicketID, x.IntegrationID, links[0], title)
+	if len(r.suggested) >= procedureMaxSuggestions {
+		return "No more suggestions are allowed in this run. Finish now."
+	}
+	var b bytes.Buffer
+	if json.Indent(&b, in, "", "  ") != nil {
+		b.Reset()
+		b.Write(in)
+	}
+	r.suggested = append(r.suggested, suggestion{Tool: x.Integration + ": " + x.Remote, Args: b.String()})
+	return "Not run: connected tools do not run in an automation, since the ticket holds text from outside the team. " +
+		"This exact call is suggested to the team in a note at the end of the run."
+}
+
+// noteSuggestions leaves one internal note, as Ollie, listing the run's suggested connected
+// calls with their exact arguments, for a person to make. It counts as a write.
+func (r *procedureRun) noteSuggestions(ctx context.Context) error {
+	if len(r.suggested) == 0 {
+		return nil
+	}
+	var b strings.Builder
+	b.WriteString("<p>Suggested by the procedure <strong>" + html.EscapeString(r.proc.Name) + "</strong>, not run: connected tools wait for " +
+		"a person when a ticket holds text from outside the team. Check the arguments before making the change yourself.</p>")
+	for _, sg := range r.suggested {
+		b.WriteString("<p><strong>" + html.EscapeString(sg.Tool) + "</strong></p><pre><code>" + html.EscapeString(clip(sg.Args, 4000)) + "</code></pre>")
+	}
+	body := hd.SanitizeRich(b.String())
+	ctx = context.WithoutCancel(ctx)
+	err := r.s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+		_, err := domain.AddMessage(ctx, tx, r.s.d.Jobs, domain.NewMessage{WorkspaceID: r.a.WorkspaceID, TicketID: r.a.TicketID, Kind: "note",
+			Direction: "outbound", AuthorType: "system", BodyHTML: body, BodyText: hd.HTMLToText(body), Trigger: "none", AI: true, FromName: "Ollie"})
+		return err
 	})
 	if err != nil {
-		r.s.d.Log.Warn("link procedure result", "ticket_id", r.a.TicketID, "err", err)
-		return out, false, nil
+		return err
 	}
-	return out + "\n\nThe new item was linked to the ticket.", false, nil
+	r.writes++
+	return nil
 }
 
 // ticketBlock is the ticket's facts: subject, status, priority, labels, team, contact,

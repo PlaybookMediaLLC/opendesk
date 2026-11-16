@@ -146,7 +146,7 @@ func (s *Service) Draft(ctx context.Context, p *auth.Principal, rawID string, in
 	}
 	thread := renderThread(tc.Msgs, tc.Summary, threadChars)
 	// The facts the reply needs, read from the workspace's connected tools first (draft_tools.go).
-	looked, err := s.draftLookup(ctx, p, tid, set, strings.Join([]string{renderTicket(tc.T), renderContact(tc.Contact), thread, request}, "\n"))
+	looked, err := s.draftLookup(ctx, p, tid, set, OutsideText(tc.Msgs), strings.Join([]string{renderTicket(tc.T), renderContact(tc.Contact), thread, request}, "\n"))
 	if err != nil {
 		return nil, err
 	}

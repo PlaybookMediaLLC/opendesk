@@ -20,8 +20,8 @@ import (
 	"github.com/useopendesk/opendesk/internal/jobs"
 )
 
-// fakeLinear stands in for a connected Linear: list_issues reads, create_issue runs
-// without asking, delete_issue waits for a person's approval.
+// fakeLinear stands in for a connected Linear: list_issues reads, create_issue is on
+// auto_tools, delete_issue waits for a person's approval.
 type fakeLinear struct {
 	iid   uuid.UUID
 	real  *integrations.Service
@@ -34,7 +34,7 @@ func (f *fakeLinear) Tools(context.Context, uuid.UUID) ([]integrations.Tool, err
 	obj := map[string]any{"type": "object", "properties": map[string]any{"title": map[string]any{"type": "string"}}}
 	t := func(remote string, read, auto bool) integrations.Tool {
 		return integrations.Tool{Name: "linear__" + remote, Remote: remote, IntegrationID: f.iid, Integration: "Linear", Provider: "linear",
-			Title: remote, Description: "[Linear] " + remote, Schema: obj, ReadOnly: read, AutoRun: auto, Hosts: []string{"linear.app"}}
+			Title: remote, Description: "[Linear] " + remote, Schema: obj, ReadOnly: read, AutoRun: auto, OnAutoTools: auto, Hosts: []string{"linear.app"}}
 	}
 	return []integrations.Tool{t("list_issues", true, false), t("create_issue", false, true), t("delete_issue", false, false)}, nil
 }
@@ -193,32 +193,34 @@ func TestProcedureRunTools(t *testing.T) {
 	}
 	reqs := e.procedureRequests()
 	names := toolNames(reqs[0])
-	for _, want := range []string{"linear__list_issues", "linear__create_issue", "add_note", "update_ticket", "search_knowledge", "search_wiki", "get_wiki_page"} {
+	for _, want := range []string{"linear__create_issue", "add_note", "update_ticket", "search_knowledge", "search_wiki", "get_wiki_page"} {
 		if !containsStr(names, want) {
 			t.Fatalf("tools %v lack %s", names, want)
 		}
 	}
-	for _, never := range []string{"linear__delete_issue", "send_reply", "handoff_to_human"} {
+	// Connected reads are not offered: their arguments would leave the workspace with nobody to approve them.
+	for _, never := range []string{"linear__list_issues", "linear__delete_issue", "send_reply", "handoff_to_human"} {
 		if containsStr(names, never) {
 			t.Fatalf("tools %v offer %s", names, never)
 		}
 	}
+	// No connected tool ran: the write on auto_tools is only suggested.
 	f.mu.Lock()
-	if strings.Join(f.calls, ",") != "list_issues,create_issue" || f.modes[0] != integrations.CallRead || f.modes[1] != integrations.CallAuto {
+	if len(f.calls) != 0 {
 		t.Fatalf("calls %v %v", f.calls, f.modes)
 	}
 	f.mu.Unlock()
-
-	// The created issue is linked to the ticket as Ollie's; the note is internal and sanitized.
-	var actor string
-	e.Scalar(`SELECT actor_type FROM ticket_links WHERE ticket_id = $1 AND url = 'https://linear.app/acme/issue/ACM-7/login-loop'`, &actor, tk.ID)
-	if actor != "ai" {
-		t.Fatalf("link actor %q", actor)
+	if n := e.count(`SELECT count(*) FROM ticket_links WHERE ticket_id = $1`, tk.ID); n != 0 {
+		t.Fatalf("links %d", n)
 	}
-	var note string
-	e.Scalar(`SELECT body_html FROM messages WHERE ticket_id = $1 AND kind = 'note' AND ai`, &note, tk.ID)
+	var note, suggested string
+	e.Scalar(`SELECT body_html FROM messages WHERE ticket_id = $1 AND kind = 'note' AND ai ORDER BY created_at, id LIMIT 1`, &note, tk.ID)
 	if !strings.Contains(note, "linear.app/acme/issue/ACM-7") || strings.Contains(note, "<script>") {
 		t.Fatalf("note %s", note)
+	}
+	e.Scalar(`SELECT body_text FROM messages WHERE ticket_id = $1 AND kind = 'note' AND ai ORDER BY created_at DESC, id DESC LIMIT 1`, &suggested, tk.ID)
+	if !strings.Contains(suggested, "Linear: create_issue") || !strings.Contains(suggested, `"title": "Login loop"`) || !strings.Contains(suggested, "not run") {
+		t.Fatalf("suggestion note %s", suggested)
 	}
 	if n := e.count(`SELECT count(*) FROM messages WHERE ticket_id = $1 AND kind = 'reply' AND direction = 'outbound'`, tk.ID); n != 0 {
 		t.Fatalf("replies %d", n)
@@ -228,7 +230,7 @@ func TestProcedureRunTools(t *testing.T) {
 		t.Fatalf("ticket %+v %v", got.Priority, got.Tags)
 	}
 	ran := e.procedureRan(tk.ID)
-	if len(ran) != 1 || ran[0]["outcome"] != "done" || ran[0]["writes"] != float64(3) {
+	if len(ran) != 1 || ran[0]["outcome"] != "done" || ran[0]["writes"] != float64(3) || ran[0]["suggested"] != float64(1) {
 		t.Fatalf("activity %v", ran)
 	}
 	// Priority is never lowered.

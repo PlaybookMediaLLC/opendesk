@@ -22,8 +22,11 @@ import (
 // delivery, a refund) from the workspace's connected tools. Only tools that run without
 // approval as reads are offered (their server marks them read-only and no admin set them to
 // ask first), never a write, not even one set to run without asking, and every call runs as a
-// read, which the integration checks again when it runs. The draft itself is then written as
-// before, streamed, with what the tools returned as a data block.
+// read, which the integration checks again when it runs. A connected call's arguments leave
+// the workspace, and nobody approves them here, so the lookup runs only on a thread written
+// by the team alone (OutsideText): on a thread with a customer's or other outside text, the
+// draft is written without it. The draft itself is then written as before, streamed, with
+// what the tools returned as a data block.
 
 const (
 	// draftLookupTurns bounds the model turns that may call tools.
@@ -63,9 +66,9 @@ func (s *Service) draftLookupTools(ctx context.Context, p *auth.Principal) map[s
 // <tool_results> block, or "" when nothing was looked up. data is the ticket, the customer,
 // the thread and the agent's request, already in data blocks. A failure of the lookup
 // (provider, tools, time) leaves the draft without it; only the caller's cancellation is
-// returned.
-func (s *Service) draftLookup(ctx context.Context, p *auth.Principal, tid uuid.UUID, set hd.AISettings, data string) (string, error) {
-	if !set.DraftTools {
+// returned. outside says the thread holds outside text: then nothing is looked up.
+func (s *Service) draftLookup(ctx context.Context, p *auth.Principal, tid uuid.UUID, set hd.AISettings, outside bool, data string) (string, error) {
+	if !set.DraftTools || outside {
 		return "", nil
 	}
 	tools := s.draftLookupTools(ctx, p)
