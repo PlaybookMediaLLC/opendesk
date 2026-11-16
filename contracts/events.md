@@ -47,6 +47,27 @@ time: settings whose REST reads need admin (`webhook.*`, `ai_mcp_server.*`, `ai_
 reach other members, API keys or webhooks. A notification is scoped to its recipient, and a personal
 view to its owner.
 
+### Who receives an event
+
+A person signed in receives every event the rules above give them. A scoped credential (an API key, or a
+person acting through an OAuth grant, `contracts/agent.md`) receives in full only the events its read scopes
+cover, the same scopes its REST reads need; every other event reaches it as the `event.hidden` stand-in, in
+the replay (`GET /v1/events`) and on its sockets (the ws token's `events` claim, `contracts/tokens.md`). The
+one table is `auth.EventScopes`, by the type's resource (up to the first dot):
+
+| resources | any one of |
+| --- | --- |
+| `ticket`, `message`, `activity`, `thread`, `ticket_draft`, `reply_draft`, `ticket_link`, `ticket_panel`, `ai_suggested_reply`, `ai_agent_review`, `view`, `saved_reply`, `notification` | `tickets:read` |
+| `contact`, `company` | `contacts:read` |
+| `tag`, `tag_group`, `custom_field` | `settings:read`, `tickets:read`, `contacts:read` |
+| `kb_article`, `kb_collection` | `kb:read` |
+| `changelog_entry`, `changelog_category` | `changelog:read` |
+| `wiki_page`, `wiki_comment` | `wiki:read` |
+| everything else (`member`, `workspace`, `mailbox`, `team`, `brand`, `billing`, `automation`, ...) | `settings:read` |
+
+`realtime` lets a key connect and replay; on its own it reads no event in full. A new event type whose
+resource is not in the table needs `settings:read` until it is added.
+
 ## Transport
 
 1. `events.Relay` (worker role) publishes each unpublished row to NATS subject

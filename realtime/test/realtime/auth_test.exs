@@ -20,7 +20,8 @@ defmodule Realtime.AuthTest do
                brand: nil,
                sid: claims["sid"],
                issued_ms: claims["iat_ms"],
-               workspaces: %{claims["wid"] => %{role: "admin", teams: []}}
+               workspaces: %{claims["wid"] => %{role: "admin", teams: []}},
+               events: nil
              }
     end
 
@@ -43,6 +44,19 @@ defmodule Realtime.AuthTest do
       [a, b] = [Tokens.uuid(), Tokens.uuid()]
       claims = Tokens.ws_claims(%{"teams" => [String.upcase(a), b, a]})
       assert {:ok, %{teams: [^a, ^b]}} = Auth.verify(Tokens.sign(claims))
+    end
+
+    test "an api_key ws token's events claim" do
+      claims =
+        Tokens.ws_claims(%{
+          "kind" => "api_key",
+          "events" => %{"only" => true, "resources" => ["ticket", "message"]}
+        })
+
+      assert {:ok, %{events: %{only: true, resources: resources}}} =
+               Auth.verify(Tokens.sign(claims))
+
+      assert MapSet.equal?(resources, MapSet.new(["ticket", "message"]))
     end
 
     test "an api_key ws token" do
@@ -137,6 +151,20 @@ defmodule Realtime.AuthTest do
           ] do
         token = Tokens.sign(Tokens.ws_claims(Map.put(extra, "workspaces", workspaces)))
         assert Auth.verify(token) == {:error, :invalid_claims}, inspect(workspaces)
+      end
+    end
+
+    test "a malformed events claim" do
+      for events <- [
+            ["ticket"],
+            %{"only" => true},
+            %{"only" => "yes", "resources" => []},
+            %{"only" => true, "resources" => [1]},
+            %{"only" => false, "resources" => [""]},
+            %{"only" => true, "resources" => Enum.map(1..201, &"r#{&1}")}
+          ] do
+        token = Tokens.sign(Tokens.ws_claims(%{"kind" => "api_key", "events" => events}))
+        assert Auth.verify(token) == {:error, :invalid_claims}, inspect(events)
       end
     end
 

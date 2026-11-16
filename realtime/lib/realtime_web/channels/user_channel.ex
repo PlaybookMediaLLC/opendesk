@@ -6,7 +6,11 @@ defmodule RealtimeWeb.UserChannel do
 
   use Phoenix.Channel, log_join: false, log_handle_in: false
 
-  alias RealtimeWeb.Channels.Guard
+  # A scoped credential's socket receives only the events its scopes read
+  # (`RealtimeWeb.Channels.EventScope`).
+  intercept ["event"]
+
+  alias RealtimeWeb.Channels.{EventScope, Guard}
 
   @impl true
   def join("user:" <> uid, _payload, %{assigns: %{kind: :user, sub: uid}} = socket) do
@@ -16,6 +20,12 @@ defmodule RealtimeWeb.UserChannel do
   end
 
   def join(_topic, _payload, _socket), do: Guard.forbidden(:user)
+
+  @impl true
+  def handle_out("event", payload, socket) do
+    push(socket, "event", EventScope.visible(payload, socket))
+    {:noreply, socket}
+  end
 
   @impl true
   def handle_in(_event, _payload, socket) do

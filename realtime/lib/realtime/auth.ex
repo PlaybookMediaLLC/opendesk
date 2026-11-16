@@ -16,6 +16,7 @@ defmodule Realtime.Auth do
   @max_token_bytes 8192
   @max_teams 200
   @max_workspaces 50
+  @max_event_resources 200
   @roles ~w(owner admin agent viewer)
   @kinds %{"user" => :user, "api_key" => :api_key}
 
@@ -30,7 +31,8 @@ defmodule Realtime.Auth do
           brand: String.t() | nil,
           sid: String.t() | nil,
           issued_ms: integer(),
-          workspaces: %{String.t() => %{role: String.t(), teams: [String.t()]}}
+          workspaces: %{String.t() => %{role: String.t(), teams: [String.t()]}},
+          events: nil | %{only: boolean(), resources: MapSet.t(String.t())}
         }
 
   @doc "The smallest `AUTH_SECRET` the gateway boots with."
@@ -108,7 +110,8 @@ defmodule Realtime.Auth do
          role when role in @roles <- c["role"],
          {:ok, teams} <- teams(c["teams"]),
          {:ok, sid} <- optional_uuid(c["sid"]),
-         {:ok, others} <- workspaces(kind, c["workspaces"]) do
+         {:ok, others} <- workspaces(kind, c["workspaces"]),
+         {:ok, events} <- events(c["events"]) do
       {:ok,
        %{
          kind: kind,
@@ -123,7 +126,10 @@ defmodule Realtime.Auth do
          issued_ms: issued_ms(c),
          # Every workspace the socket may join: the token's own (`wid`, `role`,
          # `teams`) and, for a person, the others the `workspaces` claim lists.
-         workspaces: Map.put(others, wid, %{role: role, teams: teams})
+         workspaces: Map.put(others, wid, %{role: role, teams: teams}),
+         # A scoped credential's events claim (API keys, OAuth grants): which events
+         # its sockets receive in full (`RealtimeWeb.Channels.EventScope`).
+         events: events
        }}
     else
       _ -> {:error, :invalid_claims}
@@ -148,7 +154,8 @@ defmodule Realtime.Auth do
          brand: brand,
          sid: nil,
          issued_ms: issued_ms(c),
-         workspaces: %{}
+         workspaces: %{},
+         events: nil
        }}
     else
       _ -> {:error, :invalid_claims}
@@ -198,6 +205,19 @@ defmodule Realtime.Auth do
   end
 
   defp workspaces(_kind, _), do: :error
+
+  # The events claim: `{"only": bool, "resources": [string]}`. With `only`, the socket
+  # receives in full events of the listed resources alone; without, all but those.
+  defp events(nil), do: {:ok, nil}
+
+  defp events(%{"only" => only, "resources" => list})
+       when is_boolean(only) and is_list(list) and length(list) <= @max_event_resources do
+    if Enum.all?(list, &(is_binary(&1) and byte_size(&1) in 1..64)),
+      do: {:ok, %{only: only, resources: MapSet.new(list)}},
+      else: :error
+  end
+
+  defp events(_), do: :error
 
   @doc """
   The role and private teams `identity` has in workspace `wid`, or `nil` when the

@@ -267,6 +267,13 @@ func (s *svc) registerPlatform(api huma.API) {
 			if err != nil {
 				return nil, httpx.Wrap(err)
 			}
+			// A scoped credential receives in full only the events its scopes read
+			// (auth.EventScopes); the others are their stand-in, so seq stays contiguous.
+			for i := range evs {
+				if !p.CanReadEvent(evs[i].Type) {
+					evs[i] = events.Hide(evs[i])
+				}
+			}
 			// What messages deleted since said is not replayed.
 			if err := domain.RedactReplay(ctx, s.d.DB.Pool, p.WorkspaceID, evs); err != nil {
 				return nil, httpx.Wrap(err)
@@ -323,6 +330,8 @@ func (s *svc) registerPlatform(api huma.API) {
 			for _, t := range teams {
 				c.Teams = append(c.Teams, t.String())
 			}
+			// A scoped credential's sockets receive in full only the events its scopes read.
+			c.Events = p.EventFilter()
 			// Only a person's own token spans workspaces; an API key, an OAuth grant and the
 			// assistant stay in the one they act in.
 			if in.AllWorkspaces && p.Kind == auth.KindUser && p.GrantID == uuid.Nil && !p.Assistant {
@@ -350,6 +359,7 @@ func apiKeyRole(p *auth.Principal) string {
 }
 
 // requireEventsReader accepts members and API keys with the realtime or tickets:read scope.
+// What the replay then gives each event in full follows the caller's scopes (CanReadEvent).
 func requireEventsReader(ctx context.Context) (*auth.Principal, error) {
 	p, err := auth.RequireWorkspace(ctx, auth.RoleViewer, auth.ScopeRealtime)
 	if err == nil {
