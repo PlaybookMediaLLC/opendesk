@@ -75,6 +75,33 @@ func lastMessage(e *env, tid uuid.UUID) domain.Message {
 	return ms[len(ms)-1]
 }
 
+func TestActionFieldsReadTheCall(t *testing.T) {
+	schema := map[string]any{"properties": map[string]any{"amount": map[string]any{"type": "number", "title": "Amount"}}}
+	fields, omitted := actionFields(schema, json.RawMessage(`{"order":"1042","amount":12345678901234567890,"note":null,"full":true,"items":[1,2]}`))
+	want := []domain.AIActionField{{Label: "Amount", Value: "12345678901234567890"}, {Label: "full", Value: "yes"}, {Label: "items", Value: "[1,2]"},
+		{Label: "note", Value: ""}, {Label: "order", Value: "1042"}}
+	if omitted != 0 || !slices.Equal(fields, want) {
+		t.Fatalf("fields %+v omitted %d", fields, omitted)
+	}
+	// A summary that says something else changes nothing: the arguments keep their exact text.
+	args, summary := splitSummary(json.RawMessage(`{"order":12345678901234567890,"_summary":"Check order status"}`))
+	if summary != "Check order status" || string(args) != `{"order":12345678901234567890}` {
+		t.Fatalf("split %s %q", args, summary)
+	}
+	var many strings.Builder
+	many.WriteString("{")
+	for i := 0; i < 14; i++ {
+		if i > 0 {
+			many.WriteString(",")
+		}
+		many.WriteString(`"k` + string(rune('a'+i)) + `":1`)
+	}
+	many.WriteString("}")
+	if f, o := actionFields(nil, json.RawMessage(many.String())); len(f) != maxActionFields || o != 2 {
+		t.Fatalf("many: %d fields, %d omitted", len(f), o)
+	}
+}
+
 func TestWidgetAgent(t *testing.T) {
 	e := newEnv(t, opts{billing: true})
 	art := e.article("Reset your password", "<p>To reset your password, open the sign-in page and choose Forgot password. We email you a reset link.</p>", "published")
@@ -177,6 +204,10 @@ func TestWidgetAgent(t *testing.T) {
 	if card.AIAction == nil || card.AIAction.Status != "pending" || card.AIAction.Summary != "Cancel order 1042" || card.AIAction.Title != "Cancel order" || len(tb.called()) != 1 {
 		t.Fatalf("card %+v", card.AIAction)
 	}
+	// The card lists the arguments the call runs with, read from the call, never from the summary.
+	if f := card.AIAction.Fields; len(f) != 1 || f[0].Label != "id" || f[0].Value != "1042" || card.AIAction.Omitted != 0 {
+		t.Fatalf("card fields %+v", card.AIAction.Fields)
+	}
 	var sealed []byte
 	e.Scalar(`SELECT args FROM ai_widget_actions WHERE id = $1`, &sealed, card.AIAction.ID)
 	if strings.Contains(string(sealed), "1042") {
@@ -189,7 +220,8 @@ func TestWidgetAgent(t *testing.T) {
 	e.F.queue("widget", "Done, order 1042 is cancelled.")
 	e.runActionJobs()
 	calls = tb.called()
-	if len(calls) != 2 || calls[1].Tool != "cancel_order" || calls[1].Args["id"] != "1042" || calls[1].Args["_summary"] != nil {
+	if len(calls) != 2 || calls[1].Tool != "cancel_order" || calls[1].Args["id"] != "1042" || calls[1].Args["_summary"] != nil ||
+		calls[1].Visitor.IdempotencyKey != "widget-action-"+card.AIAction.ID.String() {
 		t.Fatalf("calls %+v", calls)
 	}
 	ms3 := publicMessages(e, tid3)
@@ -394,10 +426,12 @@ func TestAgentPlayground(t *testing.T) {
 		t.Fatalf("events %v", names)
 	}
 	calls := tb.called()
-	if len(calls) != 1 || calls[0].Tool != "get_order" || !calls[0].Visitor.Verified || calls[0].Visitor.UserID != "u_1" {
+	// A made-up conversation: its calls are test calls (the toolbox never sends a verified identity for them).
+	if len(calls) != 1 || calls[0].Tool != "get_order" || !calls[0].Visitor.Test {
 		t.Fatalf("calls %+v", calls)
 	}
-	if done.Action == nil || done.Action.Summary != "Cancel order 9" || done.Action.Tool != "Cancel order" {
+	if done.Action == nil || done.Action.Summary != "Cancel order 9" || done.Action.Tool != "Cancel order" ||
+		len(done.Action.Fields) != 1 || done.Action.Fields[0].Value != "9" {
 		t.Fatalf("done %+v", done)
 	}
 	if n := e.count(`SELECT count(*) FROM ai_tool_calls WHERE workspace_id = $1`, e.WS.ID); n != 0 {

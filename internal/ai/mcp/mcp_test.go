@@ -39,7 +39,8 @@ func TestConnectListAndCallWithMeta(t *testing.T) {
 	if !lookup.ReadOnly || lookup.Destructive || !lookup.Enabled || lookup.Policy != PolicyAuto || lookup.Title == nil || *lookup.Title != "Look up an order" {
 		t.Fatalf("lookup defaults %+v", lookup)
 	}
-	if refund.ReadOnly || !refund.Destructive || refund.Enabled || refund.Policy != PolicyConfirm {
+	// A write starts off, asks the visitor, and is offered only in verified sessions.
+	if refund.ReadOnly || !refund.Destructive || refund.Enabled || refund.Policy != PolicyConfirm || !refund.VerifiedOnly {
 		t.Fatalf("refund defaults %+v", refund)
 	}
 	types, _ := e.Events(e.WS.ID, seq)
@@ -144,18 +145,31 @@ func TestConnectListAndCallWithMeta(t *testing.T) {
 	}
 	e.Do(http.MethodPatch, "/v1/ai/mcp-servers/"+s.ID.String(), e.admin(), map[string]any{
 		"tools": map[string]any{"nope": map[string]any{"enabled": true}}}).Want(t, 422)
+	// A write never runs without the visitor's confirmation.
+	e.Do(http.MethodPatch, "/v1/ai/mcp-servers/"+s.ID.String(), e.admin(), map[string]any{
+		"tools": map[string]any{"refund": map[string]any{"policy": "auto"}}}).Want(t, 422)
 
-	// The test endpoint runs any tool and reports the time.
+	// The test endpoint runs a tool once as a test call and reports the time: never a
+	// verified identity, whatever the body asks for.
 	var tr struct {
 		Content string `json:"content"`
 		IsError bool   `json:"is_error"`
 		MS      int64  `json:"ms"`
 	}
 	e.Do(http.MethodPost, "/v1/ai/mcp-servers/"+s.ID.String()+"/tools/lookup_order/test", e.admin(),
-		map[string]any{"arguments": map[string]any{"number": "7"}, "visitor": map[string]any{"verified": true, "email": "a@b.co"}}).
+		map[string]any{"arguments": map[string]any{"number": "7"}, "visitor": map[string]any{"verified": true, "email": "a@b.co", "user_id": "cust_42"}}).
 		Want(t, 200).JSON(t, &tr)
-	if tr.IsError || !strings.Contains(tr.Content, `"email":"a@b.co"`) {
+	if tr.IsError || strings.Contains(tr.Content, "a@b.co") || strings.Contains(tr.Content, "cust_42") ||
+		!strings.Contains(tr.Content, `"opendesk/test":true`) || !strings.Contains(tr.Content, `"verified":false`) {
 		t.Fatalf("test %+v", tr)
+	}
+	// A tool that needs confirmation runs only when the admin confirms it.
+	e.Do(http.MethodPost, "/v1/ai/mcp-servers/"+s.ID.String()+"/tools/refund/test", e.admin(),
+		map[string]any{"arguments": map[string]any{}}).Want(t, 409)
+	e.Do(http.MethodPost, "/v1/ai/mcp-servers/"+s.ID.String()+"/tools/refund/test", e.admin(),
+		map[string]any{"arguments": map[string]any{}, "confirm": true}).Want(t, 200).JSON(t, &tr)
+	if !tr.IsError || tr.Content != "refund failed" {
+		t.Fatalf("confirmed test %+v", tr)
 	}
 
 	// Sync keeps tool settings by name.
@@ -174,6 +188,34 @@ func TestConnectListAndCallWithMeta(t *testing.T) {
 	}
 	if _, err := e.R.Call(ctx, e.WS.ID, s.ID, "lookup_order", nil, Visitor{}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("deleted: %v", err)
+	}
+}
+
+func TestCallMetaMarksTestsAndKeys(t *testing.T) {
+	s := &server{WorkspaceID: ids.New(), WorkspaceName: "Acme"}
+	m := callMeta(s, Visitor{Test: true, Verified: true, UserID: "cust_42", Email: "a@b.co", Name: "Jane"})
+	v, _ := m["opendesk/visitor"].(map[string]any)
+	if m["opendesk/test"] != true || v["verified"] != false || v["user_id"] != nil || v["email"] != nil || v["name"] != "Jane" {
+		t.Fatalf("test meta %v", m)
+	}
+	m = callMeta(s, Visitor{Verified: true, UserID: "cust_42", IdempotencyKey: "widget-action-1"})
+	v, _ = m["opendesk/visitor"].(map[string]any)
+	if _, ok := m["opendesk/test"]; ok || v["verified"] != true || v["user_id"] != "cust_42" || m["opendesk/idempotency_key"] != "widget-action-1" {
+		t.Fatalf("meta %v", m)
+	}
+}
+
+func TestStoredAutoPolicyOnAWriteAsks(t *testing.T) {
+	s := &server{Tools: []cachedTool{{Name: "refund"}, {Name: "lookup", ReadOnly: true}},
+		Settings: map[string]toolSetting{"refund": {Enabled: true, Policy: PolicyAuto}, "lookup": {Enabled: true, Policy: PolicyAuto}}}
+	if st := s.setting(s.Tools[0]); st.Policy != PolicyConfirm {
+		t.Fatalf("write policy %q", st.Policy)
+	}
+	if st := s.setting(s.Tools[1]); st.Policy != PolicyAuto {
+		t.Fatalf("read policy %q", st.Policy)
+	}
+	if st := defaultSetting(cachedTool{Name: "x"}); !st.VerifiedOnly || st.Enabled || st.Policy != PolicyConfirm {
+		t.Fatalf("write default %+v", st)
 	}
 }
 
