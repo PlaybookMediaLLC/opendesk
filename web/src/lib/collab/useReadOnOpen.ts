@@ -1,9 +1,12 @@
 import { useEffect, useRef } from "react";
 import type { MailThreadAction, MailThreadDetail } from "../api/types";
+import { canUseMailbox } from "./access";
 
-/** Read each delivery shown during this visit, without undoing an explicit mark as unread. */
+/** Read each delivery shown during this visit, without undoing an explicit mark as unread.
+ * Only someone who uses the account's mailbox marks it read: reading someone else's private
+ * conversation changes nothing in their mailbox. */
 export function useReadOnOpen({ detail, current, enabled, onAction }: {
-  detail: (Pick<MailThreadDetail, "can_act"> & {
+  detail: (Pick<MailThreadDetail, "can_act" | "can_use_mailbox"> & {
     thread: Pick<MailThreadDetail["thread"], "id" | "unread">;
     messages: Pick<MailThreadDetail["messages"][number], "id" | "draft">[];
   }) | undefined;
@@ -13,7 +16,7 @@ export function useReadOnOpen({ detail, current, enabled, onAction }: {
 }) {
   const seen = useRef<{ threadId: string; messages: Set<string> } | null>(null);
   useEffect(() => {
-    if (!detail || !current || !detail.can_act || !enabled) return;
+    if (!detail || !current || !canUseMailbox(detail) || !enabled) return;
     const messages = detail.messages.filter((m) => !m.draft);
     const previous = seen.current;
     const first = previous?.threadId !== detail.thread.id;

@@ -419,6 +419,15 @@ func (g *gmailProvider) Apply(ctx context.Context, op ApplyOp) error {
 	for _, m := range op.Messages {
 		msgIDs = append(msgIDs, m.RemoteID)
 	}
+	if slices.Contains(remove, "INBOX") && !op.Before.IsZero() {
+		// Taking a conversation out of the inbox takes all of it, as Gmail does: its older
+		// messages opendesk does not store too, never one that arrived after the action.
+		older, err := g.olderInThreads(ctx, op, msgIDs)
+		if err != nil {
+			return err
+		}
+		msgIDs = append(msgIDs, older...)
+	}
 	for len(msgIDs) > 0 {
 		n := min(len(msgIDs), 1000)
 		in := map[string]any{"ids": msgIDs[:n], "addLabelIds": add, "removeLabelIds": remove}
@@ -428,6 +437,37 @@ func (g *gmailProvider) Apply(ctx context.Context, op ApplyOp) error {
 		msgIDs = msgIDs[n:]
 	}
 	return nil
+}
+
+// olderInThreads lists the messages of the action's Gmail threads received before it was
+// taken that are not among have.
+func (g *gmailProvider) olderInThreads(ctx context.Context, op ApplyOp, have []string) ([]string, error) {
+	threads := []string{}
+	for _, m := range op.Messages {
+		if m.ThreadRemoteID != "" && !slices.Contains(threads, m.ThreadRemoteID) {
+			threads = append(threads, m.ThreadRemoteID)
+		}
+	}
+	out := []string{}
+	for _, t := range threads {
+		var thread struct {
+			Messages []gmailMessage `json:"messages"`
+		}
+		err := g.do(ctx, http.MethodGet, "/threads/"+url.PathEscape(t)+"?format=minimal", nil, &thread)
+		if isNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range thread.Messages {
+			if d := m.date(); m.ID == "" || d.IsZero() || d.After(op.Before) || slices.Contains(have, m.ID) || slices.Contains(out, m.ID) {
+				continue
+			}
+			out = append(out, m.ID)
+		}
+	}
+	return out, nil
 }
 
 // gmailLabelChange is the labels an action adds and removes.
@@ -557,15 +597,13 @@ func (s *service) syncGmailLive(ctx context.Context, p *pass, g *gmailProvider, 
 		if refreshing {
 			return nil
 		} // the durable sweep owns recovery of its baseline
-		s.log.Info("collab gmail history expired, syncing from scratch", "account_id", p.a.ID)
-		cs, e := loadAccountCategorySets(ctx, s.d.DB.Pool, p.a)
-		if e != nil {
-			return e
-		}
-		if cs.resolve(p.a).Engine == modeGmail {
-			_, e = s.d.DB.Pool.Exec(ctx, `UPDATE collab_accounts SET category_refresh = '{"expired":true}' WHERE id = $1 AND category_epoch = $2`, p.a.ID, p.a.CategoryEpoch)
-			return e
-		}
+		// Changes made while Gmail's history lapsed (mail deleted, archived or labelled) are
+		// in no history: every stored message is read again (refreshGmailCategories' sweep,
+		// whatever the account's category engine), and the new history id is kept only once
+		// the sweep and the history since its start are done.
+		s.log.Info("collab gmail history expired, reconciling stored mail", "account_id", p.a.ID)
+		_, err = s.d.DB.Pool.Exec(ctx, `UPDATE collab_accounts SET category_refresh = '{"expired":true}' WHERE id = $1 AND category_epoch = $2`, p.a.ID, p.a.CategoryEpoch)
+		return err
 	}
 	// The history id is read first so nothing that changes during the import is missed.
 	historyID, err := g.profileHistoryID(ctx)

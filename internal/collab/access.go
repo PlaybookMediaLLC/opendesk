@@ -11,6 +11,7 @@ import (
 
 	"github.com/useopendesk/opendesk/internal/auth"
 	"github.com/useopendesk/opendesk/internal/db"
+	"github.com/useopendesk/opendesk/internal/httpx"
 	"github.com/useopendesk/opendesk/internal/ids"
 )
 
@@ -72,16 +73,17 @@ func manageableAccount(ctx context.Context, q db.Querier, p *auth.Principal, id 
 	return a, nil
 }
 
-// visibleThread loads a conversation the caller sees.
+// visibleThread loads a conversation the caller sees. A conversation set aside when its
+// mail went (emptied_at) is not found until its mail comes back.
 func visibleThread(ctx context.Context, q db.Querier, p *auth.Principal, id uuid.UUID) (*threadRow, error) {
 	return scanThread(q.QueryRow(ctx, `SELECT `+threadColumns+` FROM collab_threads t
-		WHERE t.workspace_id = $1 AND t.id = $2 AND `+threadVisibleSQL("t", "$3"), p.WorkspaceID, id, p.UserID))
+		WHERE t.workspace_id = $1 AND t.id = $2 AND t.emptied_at IS NULL AND `+threadVisibleSQL("t", "$3"), p.WorkspaceID, id, p.UserID))
 }
 
 // visibleThreads loads the conversations the caller sees among ids, in no order.
 func visibleThreads(ctx context.Context, q db.Querier, p *auth.Principal, ids []uuid.UUID) ([]*threadRow, error) {
 	rows, err := q.Query(ctx, `SELECT `+threadColumns+` FROM collab_threads t
-		WHERE t.workspace_id = $1 AND t.id = ANY($2) AND `+threadVisibleSQL("t", "$3"), p.WorkspaceID, ids, p.UserID)
+		WHERE t.workspace_id = $1 AND t.id = ANY($2) AND t.emptied_at IS NULL AND `+threadVisibleSQL("t", "$3"), p.WorkspaceID, ids, p.UserID)
 	if err != nil {
 		return nil, err
 	}
@@ -90,6 +92,25 @@ func visibleThreads(ctx context.Context, q db.Querier, p *auth.Principal, ids []
 
 // canAct reports whether the caller may act on what they see (agent or above).
 func canAct(p *auth.Principal) bool { return p.Role.AtLeast(auth.RoleAgent) }
+
+// errOwnerOnly refuses what only a private account's owner may do in its conversations.
+var errOwnerOnly = httpx.E(403, "owner_only", "Only the owner of this private account can do that in its conversations.")
+
+// canUseMailbox reports whether the caller may use the account's mailbox in its
+// conversations (contracts/collab.md "Who sees what"): act on its mail at the provider,
+// send or save drafts from its addresses, and bring more people into a conversation. A
+// shared account's mailbox is everyone's who sees the conversation and can act; a private
+// account's is its owner's alone. Others who see one of its conversations (shared on its
+// own, or assigned) read it and comment.
+func canUseMailbox(p *auth.Principal, a *accountRow) bool {
+	if !canAct(p) {
+		return false
+	}
+	if a.Visibility == VisibilityShared {
+		return true
+	}
+	return a.OwnerID != nil && *a.OwnerID == p.UserID
+}
 
 // accountAudience is who sees an account: its owner and, when shared, its audience,
 // expanded to members of the workspace.

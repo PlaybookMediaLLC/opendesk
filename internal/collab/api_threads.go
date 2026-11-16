@@ -195,7 +195,8 @@ func (s *service) registerThreadRoutes(api huma.API) {
 				}
 				return userArg
 			}
-			where := []string{`t.workspace_id = $1`}
+			// A conversation set aside when its mail went is listed nowhere ("Conversations").
+			where := []string{`t.workspace_id = $1`, `t.emptied_at IS NULL`}
 			box := in.Box
 			if box == "" {
 				box = BoxInbox
@@ -354,6 +355,21 @@ func (s *service) registerThreadRoutes(api huma.API) {
 			if len(threads) != len(tids) {
 				return nil, httpx.NotFound("Conversation")
 			}
+			// A private account's conversations are acted on by its owner alone.
+			checked := map[uuid.UUID]bool{}
+			for _, t := range threads {
+				if checked[t.AccountID] {
+					continue
+				}
+				checked[t.AccountID] = true
+				a, err := loadAccount(ctx, s.d.DB.Pool, p.WorkspaceID, t.AccountID)
+				if err != nil {
+					return nil, httpx.Wrap(err)
+				}
+				if !canUseMailbox(p, a) {
+					return nil, errOwnerOnly
+				}
+			}
 			if b.Action == ActionCategorize {
 				if err := s.categorizeThreads(ctx, p, threads, b.Category); err != nil {
 					return nil, err
@@ -460,6 +476,14 @@ func (s *service) registerThreadRoutes(api huma.API) {
 			if err != nil {
 				return nil, notFound(err, "Conversation")
 			}
+			// Who a private account's conversation is shared with is its owner's choice.
+			a, err := loadAccount(ctx, s.d.DB.Pool, p.WorkspaceID, t.AccountID)
+			if err != nil {
+				return nil, httpx.Wrap(err)
+			}
+			if !canUseMailbox(p, a) {
+				return nil, errOwnerOnly
+			}
 			shares, err := checkAudience(ctx, s.d.DB.Pool, p.WorkspaceID, in.Body.Shares)
 			if err != nil {
 				return nil, httpx.Wrap(err)
@@ -518,10 +542,23 @@ func (s *service) registerThreadRoutes(api huma.API) {
 					return nil, httpx.Validation("Assign members who are agents or above.")
 				}
 			}
+			a, err := loadAccount(ctx, s.d.DB.Pool, p.WorkspaceID, t.AccountID)
+			if err != nil {
+				return nil, httpx.Wrap(err)
+			}
 			err = s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
 				before, err := threadsAudience(ctx, tx, p.WorkspaceID, []uuid.UUID{t.ID})
 				if err != nil {
 					return err
+				}
+				if !canUseMailbox(p, a) {
+					// In a private account's conversation, only its owner assigns someone who
+					// does not see it yet (assigning shows it to them).
+					for _, u := range users {
+						if !slices.Contains(before, u) && (a.OwnerID == nil || *a.OwnerID != u) {
+							return errOwnerOnly
+						}
+					}
 				}
 				if users == nil {
 					users = []uuid.UUID{}
@@ -647,7 +684,7 @@ func (s *service) threadDetail(ctx context.Context, q db.Querier, p *auth.Princi
 	if err != nil {
 		return out, err
 	}
-	account := ThreadAccount{ID: a.ID, Email: a.Email, Name: name, DisplayName: a.DisplayName, Color: a.Color, Provider: a.Provider,
+	account := ThreadAccount{ID: a.ID, OwnerID: a.OwnerID, Email: a.Email, Name: name, DisplayName: a.DisplayName, Color: a.Color, Provider: a.Provider,
 		SignatureHTML: a.SignatureHTML, ReplyAll: a.ReplyAll}
 	if account.Identities, account.DefaultFrom, err = identitiesOut(ctx, s.fillerFor(q, p.WorkspaceID, p.UserID), a, idents); err != nil {
 		return out, err
@@ -661,7 +698,7 @@ func (s *service) threadDetail(ctx context.Context, q db.Querier, p *auth.Princi
 		return out, err
 	}
 	return MailThreadDetail{Thread: threads[0], Messages: messages, Comments: comments, Shares: shares, CanAct: canAct(p),
-		Account: account, Ticket: ticket, UnusedAIDrafts: unused}, nil
+		CanUseMailbox: canUseMailbox(p, a), Account: account, Ticket: ticket, UnusedAIDrafts: unused}, nil
 }
 
 // threadTicket is the conversation's ticket when p sees it, else nil.

@@ -119,11 +119,20 @@ after a connect, a reconnect, `POST .../sync` or an action. One runs per account
 - **First sync**: the folders and labels (at most 200), then the newest mail: the last 30 days,
   at most 500 messages per account, inbox and sent first. Older mail comes with a history import
   ("History"), when the account's manager asks for it.
-- **Then**: changes only. Gmail: `history.list` from the stored history id (a history id older
-  than Gmail keeps means a first sync again). Microsoft: a delta link per folder. IMAP: per folder,
-  new UIDs above the stored one and the flags of known ones (`CHANGEDSINCE` with CONDSTORE), with
-  UIDVALIDITY resets handled as a first sync of that folder; at most 30 folders are synced
-  (the special ones first).
+- **Then**: changes only. Gmail: `history.list` from the stored history id. A history id older
+  than Gmail keeps reads every stored message again (`messages.get` minimal, 100 a pass, kept in
+  `collab_accounts.category_refresh`), so mail deleted, archived or relabelled while the history
+  lapsed is brought in step, whatever the account's category engine; the window of the first sync
+  is read again for new mail, and the history goes on from where that read began. Microsoft: a
+  delta link per folder. IMAP: per folder, new UIDs above the stored one and the flags of known ones
+  (`CHANGEDSINCE` with CONDSTORE; with an unchanged HIGHESTMODSEQ, which some servers do not move on
+  an expunge, the known UIDs are still checked every 10 minutes). A changed UIDVALIDITY starts that
+  folder over like a first sync, after its known messages are found again under the new UIDs by
+  Message-ID (every message's envelope is read), so mail older than the first sync's window keeps
+  its place. At most 30 folders are synced (the special ones first). All Mail (`\All`, Gmail over
+  IMAP) and folders past the 30 are read for presence only: no new mail is imported from them, and a
+  message already located there keeps or loses that location like in any folder. Mail only in All
+  Mail is archived (in no folder), as in Gmail.
 - **Bursts**: new mail always arrives, and older mail that a change only touches stays out. A
   pass imports at most 500 new messages (per account on Gmail, per folder on Microsoft and IMAP);
   the rest come with the next passes. A message never imported that a change only marks read,
@@ -141,7 +150,18 @@ after a connect, a reconnect, `POST .../sync` or an action. One runs per account
     again from the first with mail left out, for that mail alone, then the folder's next round.
   - IMAP: new UIDs, the oldest first; the stored UID goes on from the last one imported.
 - Changes made at the provider (read elsewhere, moved on the phone, deleted) arrive with the next
-  sync. A message gone from every folder is removed from opendesk.
+  sync. A message that no folder read in a pass shows (Microsoft: in no folder; IMAP: with no
+  location left) is an **orphan** (`collab_messages.orphaned_at`, `orphan_passes`): it may be in a
+  folder the pass did not read, in one whose round started over, or have moved during the pass.
+  When it is first missed, and again before it would be removed, the provider is asked where it is:
+  IMAP searches All Mail first, then the folders it reads, then those read for presence, by
+  Message-ID (`UID SEARCH HEADER Message-ID`); Microsoft reads the message by its immutable id. A
+  message found takes that place. One Microsoft says it no longer has is removed at once. Any other is
+  removed once 3 passes in a row and at least 30 minutes have missed it. A message seen again is no
+  longer an orphan. Mail sent from opendesk that an IMAP server keeps no copy of (no Sent folder, or
+  the copy could not be appended: location `{"imap": [], "local": true}`) is never an orphan; the
+  copy synced from Sent later takes its place. Gmail mail is never an orphan (archived mail is in no
+  label); Gmail's history says what was deleted.
 - New messages are read a few at a time (Gmail 4, Microsoft 3, as in a history import), then stored
   a batch of 25 in one transaction. One that is gone by then, or too large, frees its place for the
   next new message.
@@ -286,7 +306,15 @@ searching, the mail page says how far back the accounts in view go ("Searching m
 
 Messages group into conversations (`MailThread`): Gmail threads, Microsoft `conversationId`, and
 for IMAP the first message its `References` / `In-Reply-To` name that the account already has, else
-a new conversation. A conversation's state is its messages': unread when any is unread, starred when
+a conversation keyed by the first message it names (or its own Message-ID). An IMAP message stored
+after a reply that named it (a history import reads newest first) takes that reply's conversation
+in with it: messages, comments, assignees, shares and AI draft outcomes move to one conversation.
+
+A conversation whose mail is all gone is deleted, unless the team worked on it (comments,
+assignees, shares of its own, AI draft outcomes): that one is set aside (`collab_threads.emptied_at`)
+with all of it, listed nowhere and `404`, and keeps the Message-IDs of the mail it lost
+(`gone_message_ids`). The same mail coming back joins it again (by its provider thread, or for IMAP
+by those Message-IDs). One set aside for 90 days is deleted by `collab.cleanup`. A conversation's state is its messages': unread when any is unread, starred when
 any is starred, in a folder when any message is. A shared account can also track `needs_action`
 locally. New incoming mail in its inbox sets it, a reply clears it, and drafts do not change it.
 Mail taken out of Spam into the inbox sets it too, the same as new mail: `not_spam`, `inbox` or a
@@ -298,8 +326,19 @@ state. Such a conversation can also be snoozed ("Snooze").
 
 `POST /v1/collab/threads/actions` applies to whole conversations, at once in opendesk (published
 right away) and, except for the local handling actions, at the provider by the job `collab.apply`
-(`jobs.CollabApplyArgs`), retried with backoff. If the provider refuses for good, the next sync
-brings back the provider's state.
+(`jobs.CollabApplyArgs`), retried with backoff. The job carries the messages the action changed in
+opendesk (`message_ids`) and when it was taken (`at`): the provider gets those messages alone, so mail
+that arrives in the conversation before the job runs keeps its own state. A Gmail action that takes
+the conversation out of the inbox (archive, spam, a move to a label) also takes the conversation's
+messages from before `at` that opendesk does not store (`threads.get` minimal), as Gmail's own
+archive does. If the provider refuses for good, the messages the action was to change are read again
+from it (Gmail `messages.get` minimal, Microsoft `GET message`, IMAP `UID FETCH FLAGS` in each of its
+folders) and opendesk shows what the provider has; a sync follows either way. An IMAP action uses a
+stored UID only while its folder's UIDVALIDITY is the one it was read with. On an IMAP server with
+neither MOVE nor UIDPLUS a move copies, marks the originals `\Deleted` and expunges only when no other
+message of the folder is marked `\Deleted` (one another client marked is never expunged); otherwise
+the originals stay marked for the server or that client to expunge. Discarding an IMAP draft does the
+same.
 
 A request takes up to 100 conversations. The web app's list has a master checkbox above it (one
 click selects the conversations loaded, one more every conversation of the box, folder, tab or
@@ -595,6 +634,17 @@ Ollie off for an account they manage (`ai: false`) whatever the workspace locks.
 - Viewers read; acting (actions, sending, sharing, assigning, comments) needs agent or above and
   sight of the conversation. Managing an account (rename, share, signature, settings, disconnect)
   is its owner's; for a shared account, workspace admins too.
+- **A private account's mailbox is its owner's alone.** Someone else who sees one of its
+  conversations (shared on its own, or assigned) reads it and comments on it. Only the owner acts on
+  it at the provider (every action of `POST /v1/collab/threads/actions`, read and categorize
+  included), replies to it or forwards it from the account's addresses, saves, sends or discards
+  drafts in it, changes its `shares`, assigns someone who does not see it yet (anyone may assign
+  someone who already sees it, themselves included, or unassign), or mentions someone who does not
+  see it yet (which would share it). Anything else is `403 owner_only`. A shared account's
+  conversations keep the rules above: whoever sees one and can act does all of it.
+  `MailThreadDetail.can_use_mailbox` says which applies to the caller, and `MailThread.private_account`
+  marks a private account's conversations in lists; the web app offers the owner-only controls to
+  the owner alone and does not mark a conversation read for anyone else.
 - Anything not visible is `404`. Every row is read and written with `workspace_id` from the
   Principal; a referenced team, user, folder or attachment is checked to belong to the workspace.
 - A member removed from the workspace, or a deleted user, loses their accounts: private accounts
@@ -855,6 +905,7 @@ interface MailThread {
     to: Address[]
     record_id: string | null   //   its AI draft record ("AI draft outcomes"): feedback names it once the draft is discarded
   } | null
+  private_account: boolean     // its account is private: only the account's owner acts on it, replies from it or brings people into it ("Who sees what")
 }
 
 interface MailMessage {
@@ -918,6 +969,7 @@ interface MailAttachment {
   size: number
   inline: boolean
   content_id: string
+  blocked?: boolean            // a program or script (hd.IsExecutable): listed, never served
   url: string                  // signed, valid for one to two hours (the expiry is rounded to the hour), works in <img> and as a download link. The link is the permission: whoever holds it can fetch the file until it expires, so a link handed out before a conversation was unshared works until then, and no new one is signed for someone who can no longer see the message
 }
 
@@ -933,12 +985,13 @@ interface MailComment {
 
 interface MailThreadDetail {
   thread: MailThread
-  account: { id: string; email: string; name: string; display_name: string; color: string; provider: string; signature_html: string; reply_all: boolean;
-             identities: MailIdentity[]; default_from: string }
+  account: { id: string; owner_id: string | null; email: string; name: string; display_name: string; color: string; provider: string; signature_html: string; reply_all: boolean;
+             identities: MailIdentity[]; default_from: string }  // owner_id: who connected it ("Who sees what")
   messages: MailMessage[]      // oldest first
   comments: MailComment[]      // oldest first
   shares: Audience             // the conversation's own shares
-  can_act: boolean
+  can_act: boolean             // may comment (agent or above)
+  can_use_mailbox: boolean     // may act on it at the provider, reply or forward from its account, save drafts, share it, assign someone new and mention someone new: a private account's owner, or anyone who can act on a shared account's ("Who sees what")
   ticket: { id: string; number: number; subject: string } | null  // the ticket it answered or was answered from, when the caller sees it ("Answering tickets")
   unused_ai_drafts: (AIDraftRef & { outcome_at: string })[]  // AI drafts discarded, replaced or abandoned and gone, oldest first ("AI draft outcomes")
 }
@@ -1222,18 +1275,18 @@ account or conversation; "act": sees it and is agent or above; "manage": "Who se
 | GET | `/v1/collab/accounts/{id}/category-rules` | manage | `{rules: {id, sender, category, created_at}[]}` |
 | POST | `/v1/collab/accounts/{id}/category-rules` | manage | `{sender: an address or "@domain", category}` → the rule (one per sender: a second replaces the first; at most 500). Moves the sender's inbox conversations to the category now |
 | DELETE | `/v1/collab/accounts/{id}/category-rules/{rule_id}` | manage | → 204 |
-| PUT | `/v1/collab/threads/{id}/shares` | act | `{shares: Audience}` → `MailThreadDetail`. Empty unshares. Audit `collab.thread_shared` (ids only) |
-| PUT | `/v1/collab/threads/{id}/assignees` | act | `{user_ids: string[0..20]}` → `MailThreadDetail`; each must be a member (agent+); assigning lets them see it. Each new assignee gets a `collab_assigned` notification |
-| POST | `/v1/collab/threads/{id}/comments` | act | `{body_html: 1..20000, mentions?: string[]}` → `MailComment`; each mentioned member who can see it gets a `collab_mention` notification; a mention of someone who cannot see it shares the conversation with them |
+| PUT | `/v1/collab/threads/{id}/shares` | act; a private account's owner | `{shares: Audience}` → `MailThreadDetail`. Empty unshares. Audit `collab.thread_shared` (ids only). `403 owner_only` for anyone else in a private account's conversation |
+| PUT | `/v1/collab/threads/{id}/assignees` | act | `{user_ids: string[0..20]}` → `MailThreadDetail`; each must be a member (agent+); assigning lets them see it. Each new assignee gets a `collab_assigned` notification. In a private account's conversation only its owner assigns someone who does not see it yet (`403 owner_only`) |
+| POST | `/v1/collab/threads/{id}/comments` | act | `{body_html: 1..20000, mentions?: string[]}` → `MailComment`; each mentioned member who can see it gets a `collab_mention` notification; a mention of someone who cannot see it shares the conversation with them (in a private account's conversation by its owner alone: `403 owner_only`, nothing saved) |
 | PATCH | `/v1/collab/comments/{id}` | its author | `{body_html}` → `MailComment` |
 | DELETE | `/v1/collab/comments/{id}` | its author, or an admin | → 204 |
-| POST | `/v1/collab/messages` | act on the account | Send: `{account_id, mode: "new" \| "reply" \| "reply_all" \| "forward", message_id? (the `MailMessage.id` replied to or forwarded; required unless new), to: string[], cc?: string[], bcc?: string[], subject, body_html, attachment_ids?: string[] (POST /v1/attachments uploads of the caller), forward_attachments?: boolean, from_email?}` → `MailMessage`. `from_email` is the address it goes out from and must be one of the account's addresses that can send (`422 validation_failed`); left out, a reply or forward goes from the address the original was written to, new mail from the default ("Addresses"). At most 100 recipients, 25 MB of files. Sent through the provider within the request (`502 send_failed` with the provider's reason, nothing stored); then stored in the conversation (a reply stays in its conversation) and in Sent. The server sends `body_html` as written: the composer adds the signature and, for a forward, the original. Someone who sees only one conversation (shared or assigned) may reply to it or forward it; new mail needs sight of the account. At most 60 a minute per person (`429 rate_limited`) |
+| POST | `/v1/collab/messages` | act on the account | Send: `{account_id, mode: "new" \| "reply" \| "reply_all" \| "forward", message_id? (the `MailMessage.id` replied to or forwarded; required unless new), to: string[], cc?: string[], bcc?: string[], subject, body_html, attachment_ids?: string[] (POST /v1/attachments uploads of the caller), forward_attachments?: boolean, from_email?}` → `MailMessage`. `from_email` is the address it goes out from and must be one of the account's addresses that can send (`422 validation_failed`); left out, a reply or forward goes from the address the original was written to, new mail from the default ("Addresses"). At most 100 recipients, 25 MB of files. Sent through the provider within the request (`502 send_failed` with the provider's reason, nothing stored); then stored in the conversation (a reply stays in its conversation) and in Sent. The server sends `body_html` as written: the composer adds the signature and, for a forward, the original. Someone who sees only one conversation (shared or assigned) of a shared account may reply to it or forward it; in a private account's conversation only its owner (`403 owner_only`); new mail needs sight of the account. A Microsoft message whose MIME source is over what Graph takes in one request (about 3 MB, attachments included) is `422 message_too_large` before anything is sent. Header `Idempotency-Key`: the same key from the same person within a day answers the message it sent instead of sending again; while a send with that key ended without storing its message (its outcome unknown) a retry is `409 send_in_progress` for 10 minutes; a send the provider refused (for good, or by a rate limit) gives its key back (`collab_send_keys`). The web composer keeps one key while the message stays the same. At most 60 a minute per person (`429 rate_limited`) |
 | POST | `/v1/collab/drafts` | act on the account | Save a new draft ("Drafts"): the body of `POST /v1/collab/messages`, recipients optional → `MailMessage` (`draft: true`, `draft_id`). Saved at the provider first (`502 provider_error` with detail, nothing stored). At most 120 saves a minute per person (`429 rate_limited`) |
 | PUT | `/v1/collab/drafts/{id}` | act on its conversation | Save again: `{to, cc?, bcc?, subject, body_html, attachment_ids?, keep_attachments?: string[], from_email?}` (left out keeps the draft's From when it can still send) → `MailMessage`, the same id. `keep_attachments`: the draft's own files to keep (`MailAttachment.id`s); left out keeps every file that is not an inline image, and inline images stay while `body_html` shows them. `404` for a message that is not a draft. Counts toward the 120 a minute. Saves, sends and discards of one draft run one at a time (on every server), each checking the draft as it is once its turn comes; one that waits too long for its turn is `409 draft_busy` |
 | DELETE | `/v1/collab/drafts/{id}` | act on its conversation | Discard → 204: deleted at the provider, then here (a new-mail draft's conversation with it) |
 | POST | `/v1/collab/drafts/{id}/send` | act on its conversation | Send it; the body (as for `PUT`) is optional: when given the draft is saved with it first, else it goes as saved (composed again from what was saved when its From name names the sender, so it goes out with the sender's name). Needs a recipient. → `MailMessage`, the sent message, stored like `POST /v1/collab/messages` does (in the draft's conversation and in Sent) with the draft removed. `502 send_failed`; counts toward the 60 sends a minute |
 | GET | `/v1/collab/messages/{id}/details` | see | `MessageDetails` ("Message details"), read from the message's source (stored, else the provider: `502 provider_error`) |
-| GET | `/v1/collab/attachments/{message_id}/{index}` | signed (`exp`, `sig`) | the file, `Content-Disposition: attachment` unless an image; `?inline=1` for images. `404` when the signature is wrong or expired |
+| GET | `/v1/collab/attachments/{message_id}/{index}` | signed (`exp`, `sig`) | the file, `Content-Disposition: attachment` unless an image; `?inline=1` for images. Its `Content-Type` is the one its bytes have (`hd.DetectType`: an active type is `text/plain`), whatever the sender declared; a program or script (`hd.IsExecutable`, `MailAttachment.blocked`) is `403`, never served. `404` when the signature is wrong or expired |
 | GET | `/v1/collab/sidebar` | member | `SidebarPrefs` (defaults when never saved); with or without Collab; with Collab, pins All inboxes once at a second account ("All inboxes in Favorites") |
 | PUT | `/v1/collab/sidebar` | member | `SidebarPrefs` → `SidebarPrefs`; with or without Collab; at most 16 KB besides `sections`, which hold at most 32 KB; unknown ids are kept (an id of something gone is ignored by the app). `badges`: at most 300, keys of at most 100 characters with the prefixes above, values `unread`, `total`, `count`, `awaiting`, `urgent`, `overdue`, `open` or `none`; `mail_tabs`: at most 30, each a box above or `folder:<uuid>`, once. `sections`: the limits above, item ids as SpaceItem's, each `icon` one emoji. `row_order`: keys the built-in section ids, at most 300 rows each, each 1..100 characters once, at most 16 KB. `names` and `icons`: at most 300 each, keys 1..100 characters, names checked like a name people choose (1..64 characters, `422 invalid_name`), icons one emoji, at most 48 KB together. Leaving out `badges`, `mail_tabs`, `auto_pins`, `sections`, `row_order`, `names`, `icons` or `show_waiting_chats` keeps the saved value; `422` otherwise |
 
@@ -1476,7 +1529,7 @@ webhooks.
 
 | type | data | to |
 | --- | --- | --- |
-| `collab.changed` | `{account_id: string \| null, thread_ids: string[], folders: boolean}`: conversations changed (synced, acted on, sent, shared, assigned, commented, or their account's `reply_all` changed); `folders` when folders or counts changed. Refetch what is shown | who sees the account, plus who sees the conversations |
+| `collab.changed` | `{account_id: string, thread_ids: string[], folders: boolean}`: conversations changed (synced, acted on, sent, shared, assigned, commented, or their account's `reply_all` changed); `folders` when folders or counts changed. Refetch what is shown | each event names only what its receivers see: who sees the account gets its conversations; someone who sees a conversation on its own (shared or assigned) gets an event of that one conversation alone (`folders: false`); a change to one conversation is one event for everyone who sees it |
 | `collab.accounts` | `{account_id}`: an account was connected, changed, removed, or changed status | its owner and audience, before and after |
 | `collab.sidebar` | `{}`: the member saved their sidebar preferences (`PUT /v1/collab/sidebar`, with or without Collab). Refetch them | that member alone |
 
@@ -1521,6 +1574,10 @@ in-app and push like other notifications, emailed by the member's notification p
   Gmail values (`sync_state`). It is written with `jsonb_set` under the row lock.
 - Deleting an account deletes its folders, conversations, messages, comments, shares and stored raw
   messages (`collab.cleanup` removes the storage objects).
+- `collab_messages.orphaned_at` and `orphan_passes` (an orphan, "Sync"), `collab_threads.emptied_at`
+  and `gone_message_ids` (a conversation set aside, "Conversations"; deleted after 90 days)
+  (`migrations/000765_collab_orphan_grace.up.sql`). `collab_send_keys` (a send's idempotency key and
+  the message it sent, per person; kept a day) (`migrations/000766_collab_send_keys.up.sql`).
 - `messages.collab_account_id`, `messages.collab_reply_to` and `collab_threads.ticket_id`
   (`migrations/000663_collab_ticket_replies.up.sql`, with `mailboxes.personal_replies`): the account a
   ticket reply went from and the Reply-To asked for, and the ticket a conversation answered. Deleting the account clears the first and

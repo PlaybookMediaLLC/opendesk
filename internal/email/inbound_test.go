@@ -153,7 +153,7 @@ func TestSMTPReceiver(t *testing.T) {
 // worker's test pins the same value).
 func TestSignInboundMatchesWorker(t *testing.T) {
 	got := SignInbound("s3cret", 1700000000, "t0k3n@in.opendesk.sh", "sender@example.com", []byte("Subject: hi\r\n\r\nhello"))
-	if got != "t=1700000000,v1=c030b4033566ca50f8d5b887d26b405893d76b89ebaac855375d1978999d9e47" {
+	if got != "t=1700000000,v2=bbee85268e8760772c38c6da8a41ff9d5b2b666e799615843aaf9e2d402a8c7e" {
 		t.Fatalf("signature %s", got)
 	}
 	if !inboundSignatureOK(got, "s3cret", "t0k3n@in.opendesk.sh", "sender@example.com", []byte("Subject: hi\r\n\r\nhello"), time.Unix(1700000060, 0)) {
@@ -161,5 +161,18 @@ func TestSignInboundMatchesWorker(t *testing.T) {
 	}
 	if inboundSignatureOK(got, "s3cret", "other@in.opendesk.sh", "sender@example.com", []byte("Subject: hi\r\n\r\nhello"), time.Unix(1700000060, 0)) {
 		t.Fatal("signature accepted for another recipient")
+	}
+	// The boundary between the recipient and the envelope sender is part of what is signed.
+	moved := SignInbound("s3cret", 1700000000, "a.b@in.opendesk.sh", "c@example.com", []byte("x"))
+	if inboundSignatureOK(moved, "s3cret", "a.b@in.opendesk.sh.c", "example.com", []byte("x"), time.Unix(1700000060, 0)) {
+		t.Fatal("signature accepted with the field boundary moved")
+	}
+	// A relay that still signs the earlier way is accepted.
+	v1 := "t=1700000000,v1=c030b4033566ca50f8d5b887d26b405893d76b89ebaac855375d1978999d9e47"
+	if !inboundSignatureOK(v1, "s3cret", "t0k3n@in.opendesk.sh", "sender@example.com", []byte("Subject: hi\r\n\r\nhello"), time.Unix(1700000060, 0)) {
+		t.Fatal("v1 signature refused")
+	}
+	if inboundSignatureOK(v1, "s3cret", "t0k3n@in.opendesk.sh", "sender@example.com", []byte("Subject: hi\r\n\r\nhello"), time.Unix(1700001000, 0)) {
+		t.Fatal("old v1 signature accepted")
 	}
 }

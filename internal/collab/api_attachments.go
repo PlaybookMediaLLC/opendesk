@@ -12,6 +12,7 @@ import (
 	"github.com/useopendesk/opendesk/internal/db"
 	"github.com/useopendesk/opendesk/internal/domain"
 	"github.com/useopendesk/opendesk/internal/email"
+	"github.com/useopendesk/opendesk/internal/helpdesk/hd"
 	"github.com/useopendesk/opendesk/internal/ids"
 	"github.com/useopendesk/opendesk/internal/products"
 )
@@ -19,6 +20,18 @@ import (
 // inlineImageTypes are the images a browser may show inline from an attachment link.
 // Anything else (SVG included, which can carry script) downloads.
 var inlineImageTypes = []string{"image/png", "image/jpeg", "image/gif", "image/webp", "image/avif", "image/bmp"}
+
+// attachmentType is the media type a file is stored and served as, from its first bytes and
+// name (hd.DetectType: an active type is plain text), and whether it is a program or script
+// (hd.IsExecutable).
+func attachmentType(content []byte, name string) (string, bool) {
+	head := content[:min(len(content), 512)]
+	ct := "application/octet-stream"
+	if mt, _, err := mime.ParseMediaType(hd.DetectType(head, name)); err == nil {
+		ct = mt
+	}
+	return ct, hd.IsExecutable(head, name)
+}
 
 // attachmentHandler serves GET /v1/collab/attachments/{message_id}/{index}: one file of a
 // stored message, authenticated by the link's signature alone (it works in <img>). A wrong
@@ -87,6 +100,13 @@ func (s *service) attachmentHandler(w http.ResponseWriter, r *http.Request) {
 	name := stored.Filename
 	if name == "" {
 		name = email.CleanFilename(part.FileName, ct)
+	}
+	// The type served is the one the bytes have (an active type is plain text), whatever the
+	// sender declared; a program or script is not served at all.
+	ct, blocked := attachmentType(part.Content, name)
+	if blocked || stored.Blocked {
+		http.Error(w, "This file is a program or script and is not downloaded from opendesk.", http.StatusForbidden)
+		return
 	}
 	disposition := "attachment"
 	if slices.Contains(inlineImageTypes, ct) && q.Get("inline") == "1" {

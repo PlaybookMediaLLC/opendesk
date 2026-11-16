@@ -405,7 +405,62 @@ func (s *service) syncGraph(ctx context.Context, p *pass, g *graphProvider) erro
 			budget = max(budget-used, 0)
 		}
 	}
-	return p.batch(ctx, func(tx pgx.Tx) error { return p.removeOrphans(ctx, tx) })
+	if err := s.relocateGraph(ctx, p, g); err != nil {
+		return err
+	}
+	return p.batch(ctx, func(tx pgx.Tx) error { return p.sweepOrphans(ctx, tx) })
+}
+
+// relocateGraph asks Microsoft where the pass's orphans are: a message keeps its immutable
+// id when it moves, so reading it names its folder now. One in a stored folder takes it;
+// one Microsoft no longer has is removed at once; one in a folder opendesk does not keep
+// stays, missed again only after another orphanGrace; one Microsoft would not read stays an
+// orphan for the sweep to count.
+func (s *service) relocateGraph(ctx context.Context, p *pass, g *graphProvider) error {
+	cands, err := p.relocatable(ctx, s.d.DB.Pool, relocateBatch)
+	if err != nil || len(cands) == 0 {
+		return err
+	}
+	ids := make([]string, 0, len(cands))
+	for _, m := range cands {
+		ids = append(ids, m.RemoteID)
+	}
+	res, errs := fetchEach(ctx, graphFetchers, ids, g.fork, func(ctx context.Context, g *graphProvider, id string) (*graphMessage, error) {
+		var m graphMessage
+		err := g.do(ctx, http.MethodGet, "/me/messages/"+url.PathEscape(id)+"?$select="+graphDeltaSelect, nil, &m)
+		return &m, err
+	})
+	return p.batch(ctx, func(tx pgx.Tx) error {
+		for i, m := range cands {
+			switch {
+			case isNotFound(errs[i]):
+				if err := p.remove(ctx, tx, m); err != nil {
+					return err
+				}
+				continue
+			case errs[i] != nil || res[i] == nil:
+				continue
+			}
+			gm := res[i]
+			f, ok := p.folders[gm.ParentFolderID]
+			if !ok || f.Kind != KindFolder {
+				if _, err := tx.Exec(ctx, `UPDATE collab_messages SET orphaned_at = now(), orphan_passes = 1 WHERE id = $1`, m.ID); err != nil {
+					return err
+				}
+				continue
+			}
+			st := state{Unread: !gm.IsRead, Starred: gm.Flag.FlagStatus == "flagged", Draft: gm.IsDraft, FolderIDs: []uuid.UUID{f.ID}}
+			cats, err := p.categoryIDs(ctx, tx, gm.Categories)
+			if err != nil {
+				return err
+			}
+			st.FolderIDs = append(st.FolderIDs, cats...)
+			if err := p.update(ctx, tx, m, st); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // isSyncStateGone reports Graph refusing an expired delta link.

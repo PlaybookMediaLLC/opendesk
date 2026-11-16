@@ -338,10 +338,18 @@ export function MailComposer({ variant, threadId, accounts, accountId, onAccount
   const recipients = draft.to.length + draft.cc.length + draft.bcc.length;
   const busy = uploads.some((u) => u.status === "uploading");
 
+  // A send keeps its idempotency key while the message stays the same, so sending it again
+  // after a failure whose outcome is unknown never sends it twice.
+  const sendKey = useRef<{ body: string; key: string } | null>(null);
+  const keyFor = (body: CollabSendBody) => {
+    const json = JSON.stringify(body);
+    if (sendKey.current?.body !== json) sendKey.current = { body: json, key: newKey() };
+    return sendKey.current.key;
+  };
   const send = useMutation({
     // With a draft, the draft is sent (saved with what the composer shows first).
     mutationFn: (v: { draftId: string | null; body: CollabSendBody; draftBody: CollabDraftBody }) =>
-      v.draftId ? api.collab.drafts.send(v.draftId, v.draftBody) : api.collab.send(v.body),
+      v.draftId ? api.collab.drafts.send(v.draftId, v.draftBody) : api.collab.send(v.body, keyFor(v.body)),
     onSuccess: (m, v) => {
       // The conversation shows it at once; collab.changed brings the rest.
       qc.setQueryData<MailThreadDetail>(qk.mailThread(m.thread_id), (old) => {
@@ -362,6 +370,8 @@ export function MailComposer({ variant, threadId, accounts, accountId, onAccount
     },
     onError: (e) => {
       gone.current = false;
+      // Told it may have gone out already: sending again is a choice of its own.
+      if (isApiError(e, "send_in_progress")) sendKey.current = null;
       toast.error(e, t("composer.sendFailed"));
     },
   });
@@ -682,4 +692,10 @@ export function useForwardBlock(message: MailMessage | undefined): string {
     const head = forwardHeader(message, { title: t("composer.fwdTitle"), from: t("composer.fwdFrom"), date: t("composer.fwdDate"), subject: t("composer.fwdSubject"), to: t("composer.fwdTo") }, fullDate(message.sent_at));
     return `${head}<blockquote>${message.body_html ? sanitizeHtml(message.body_html) : `<p>${escapeHtml(message.body_text)}</p>`}</blockquote>`;
   }, [message, t]);
+}
+
+/** A fresh idempotency key for a send. */
+function newKey(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }

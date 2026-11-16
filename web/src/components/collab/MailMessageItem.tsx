@@ -98,7 +98,21 @@ export function MailAttachments({ items }: { items: MailAttachment[] }) {
       )}
       {files.length > 0 && (
         <div className="flex flex-wrap gap-2">
-          {files.map((a) => (
+          {files.map((a) =>
+            a.blocked ? (
+              // A program or script: listed, never downloaded from opendesk.
+              <span
+                key={a.id}
+                title={t("thread.blockedFile", { name: a.filename })}
+                className="flex h-10 max-w-[260px] items-center gap-2.5 rounded-md border border-dashed border-line bg-sunken pl-2.5 pr-3 text-fg-3"
+              >
+                <FileText className="size-4 shrink-0 text-fg-4" />
+                <span className="min-w-0">
+                  <span className="block truncate text-[12.5px]">{a.filename}</span>
+                  <span className="block truncate text-[10.5px] text-fg-4">{t("thread.blockedShort")}</span>
+                </span>
+              </span>
+            ) : (
             <a
               key={a.id}
               href={a.url}
@@ -114,7 +128,8 @@ export function MailAttachments({ items }: { items: MailAttachment[] }) {
               </span>
               <Download className="ml-1 size-3.5 shrink-0 text-fg-4 group-hover:text-fg" />
             </a>
-          ))}
+            ),
+          )}
         </div>
       )}
       <Dialog open={!!preview} onOpenChange={(o) => !o && setPreview(null)} title={preview?.filename ?? ""} size="xl">

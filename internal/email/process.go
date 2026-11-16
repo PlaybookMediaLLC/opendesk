@@ -72,6 +72,9 @@ type threadMatch struct {
 	status   string
 	// thread is set when the message answers one of a third-party thread's messages.
 	thread *uuid.UUID
+	// unproven: matched by a ticket number alone (an address tag, a subject tag or our id
+	// format without its proof), which the sender being the contact is all that backs.
+	unproven bool
 }
 
 // processInbound turns a stored raw email into a ticket message.
@@ -262,6 +265,11 @@ func (s *service) processInbound(ctx context.Context, wid, inboundID uuid.UUID) 
 				return err
 			}
 		}
+		// Mail the built-in receiver took straight from a sending server has no sender check
+		// behind it: matched to a ticket by its number alone, only the From address it wrote
+		// says it is the contact. It is flagged and handled like a reply that failed sender
+		// authentication (no reopening, automations or AI answer), without being called spam.
+		flagged := authFailed || (via == viaDirect && verdict != authPass && match != nil && match.unproven)
 		contactID, _, err := domain.UpsertContactByEmail(ctx, tx, wid, sender, senderName)
 		if err != nil {
 			return err
@@ -299,7 +307,7 @@ func (s *service) processInbound(ctx context.Context, wid, inboundID uuid.UUID) 
 			}
 			// A customer's follow-up of a closed ticket may go to whoever had it.
 			var assignee *uuid.UUID
-			if match != nil && !internal && !authFailed {
+			if match != nil && !internal && !flagged {
 				if assignee, err = followUpAssignee(ctx, tx, wid, match.ticketID, route.TeamID); err != nil {
 					return err
 				}
@@ -336,7 +344,7 @@ func (s *service) processInbound(ctx context.Context, wid, inboundID uuid.UUID) 
 		switch {
 		case created:
 			trigger = jobs.TriggerTicketCreated
-		case authFailed:
+		case flagged:
 			trigger = "none" // no customer_replied automations for a sender that failed authentication
 		case newcomer:
 			trigger = "none" // nor for someone new to the conversation: the team reads them first
@@ -353,7 +361,7 @@ func (s *service) processInbound(ctx context.Context, wid, inboundID uuid.UUID) 
 			Subject: pm.Subject, FromEmail: sender, FromName: displayname.Clean(senderName, displayname.Person),
 			To: pm.To, Cc: pm.Cc, EmailMessageID: msgID, InReplyTo: pm.InReplyTo, References: pm.References,
 			InboundEmailID: &inboundID, AttachmentIDs: attIDs, Trigger: trigger, MailboxID: &m.ID,
-			ReplyTo: replyTo, AuthFailed: authFailed, NoAutoReply: noAuto, FormSender: formSender, NoReopen: authFailed && !created,
+			ReplyTo: replyTo, AuthFailed: flagged, NoAutoReply: noAuto, FormSender: formSender, NoReopen: flagged && !created,
 			ReceivedAt: receivedAt,
 		})
 		if err != nil {
@@ -372,7 +380,7 @@ func (s *service) processInbound(ctx context.Context, wid, inboundID uuid.UUID) 
 				return err
 			}
 		}
-		if !authFailed && !internal && !newcomer {
+		if !flagged && !internal && !newcomer {
 			if err := s.queueAIAnswer(ctx, tx, m, ticket.ID, msg.ID, pm, sender); err != nil {
 				return err
 			}
@@ -725,6 +733,9 @@ func (s *service) findThread(ctx context.Context, tx pgx.Tx, wid uuid.UUID, m *m
 	}
 	for _, n := range candidates {
 		if t, err := s.ticketByNumber(ctx, tx, wid, n, sender); err != nil || t != nil {
+			if t != nil {
+				t.unproven = true
+			}
 			return t, err
 		}
 	}
@@ -779,6 +790,9 @@ func (s *service) ticketByNumber(ctx context.Context, tx pgx.Tx, wid uuid.UUID, 
 	return &t, nil
 }
 
+// bounceWindow is how long after a message was sent a delivery report still counts for it.
+const bounceWindow = 14 * 24 * time.Hour
+
 // recordBounce marks the outbound message a delivery report refers to. Only a report
 // with the null envelope sender reaches here, and it counts only for a message this
 // mailbox sent.
@@ -795,12 +809,22 @@ func (s *service) recordBounce(ctx context.Context, wid, mailboxID uuid.UUID, pm
 			}
 		}
 	}
+	// A delivery report names the recipients it failed for (RFC 3464 Final-Recipient): it
+	// counts for a message sent to one of them (one that records none is matched by its id
+	// alone), sent recently enough to bounce now. One that names no recipient is no report.
+	rcpts := bounceRecipients(raw)
+	if len(rcpts) == 0 {
+		return nil
+	}
 	detail := bounceDetail(raw)
 	return s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `UPDATE messages SET delivery_status = 'bounced', delivery_error = $4
 			WHERE workspace_id = $1 AND direction = 'outbound' AND mailbox_id = $5 AND delivery_status IN ('sent', 'pending')
 			AND (email_message_id = ANY($2) OR id = ANY($3))
-			RETURNING id, ticket_id`, wid, refs, msgIDs, detail, mailboxID)
+			AND (sent_at IS NULL OR sent_at > now() - make_interval(secs => $7))
+			AND (cardinality(to_emails || cc_emails || bcc_emails) = 0
+				OR EXISTS (SELECT 1 FROM unnest(to_emails || cc_emails || bcc_emails) r WHERE lower(r) = ANY($6)))
+			RETURNING id, ticket_id`, wid, refs, msgIDs, detail, mailboxID, rcpts, bounceWindow.Seconds())
 		if err != nil {
 			return err
 		}
@@ -844,7 +868,7 @@ func (s *service) queueAutoReply(ctx context.Context, tx pgx.Tx, m *mailboxRow, 
 	}
 	// The subject and body are filled when the email is sent (contracts/templates.md).
 	_, err = s.d.Jobs.InsertTx(ctx, tx, jobs.SendTicketEmailArgs{WorkspaceID: m.WorkspaceID, TicketID: t.ID, Subject: m.AutoReplySubject,
-		HTML: m.AutoReplyHTML, AutoGenerated: true, Template: true}, &river.InsertOpts{Queue: jobs.QueueEmail, MaxAttempts: 5})
+		HTML: m.AutoReplyHTML, AutoGenerated: true, AutoReplied: true, Template: true}, &river.InsertOpts{Queue: jobs.QueueEmail, MaxAttempts: 5})
 	return err
 }
 

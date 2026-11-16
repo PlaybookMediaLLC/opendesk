@@ -53,7 +53,7 @@ type MailPersonFile struct {
 // personThreadsSQL is the predicate of the conversations with the address ($3) the caller
 // ($2) sees in the workspace ($1), on collab_threads alias t.
 func personThreadsSQL() string {
-	return `t.workspace_id = $1 AND t.addresses @> ARRAY[$3::text] AND ` + threadVisibleSQL("t", "$2") +
+	return `t.workspace_id = $1 AND t.emptied_at IS NULL AND t.addresses @> ARRAY[$3::text] AND ` + threadVisibleSQL("t", "$2") +
 		` AND NOT (t.folder_ids && ` + roleSQL(RoleTrash, RoleSpam) + `)`
 }
 

@@ -219,6 +219,14 @@ func (s *service) mentionPeople(ctx context.Context, tx pgx.Tx, p *auth.Principa
 		return err
 	}
 	if len(blind) > 0 {
+		// Mentioning shares the conversation: in a private account's, only its owner does.
+		a, err := loadAccount(ctx, tx, p.WorkspaceID, t.AccountID)
+		if err != nil {
+			return err
+		}
+		if !canUseMailbox(p, a) {
+			return errOwnerOnly
+		}
 		for _, u := range blind {
 			if _, err := tx.Exec(ctx, `INSERT INTO collab_shares (id, workspace_id, thread_id, user_id, shared_by)
 				VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING`, ids.New(), p.WorkspaceID, t.ID, u, p.UserID); err != nil {

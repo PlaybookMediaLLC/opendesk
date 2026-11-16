@@ -1450,7 +1450,7 @@ func TestAPIAttachmentServe(t *testing.T) {
 	raw, err := email.BuildMIME(&email.OutMessage{From: mail.Address{Address: "from@example.com"}, To: []string{a.Email}, Subject: "Files",
 		MessageID: "<files@example.com>", HTML: "<p>hi</p>", Text: "hi", Attachments: []email.OutAttachment{
 			{Filename: "report.pdf", ContentType: "application/pdf", Data: []byte("%PDF-1.4 report")},
-			{Filename: "pic.png", ContentType: "image/png", Data: []byte("\x89PNG fake")},
+			{Filename: "pic.png", ContentType: "image/png", Data: []byte("\x89PNG\r\n\x1a\nfake")},
 		}}, false)
 	if err != nil {
 		t.Fatal(err)
@@ -1461,7 +1461,7 @@ func TestAPIAttachmentServe(t *testing.T) {
 	}
 	mustExec(t, w.d, `UPDATE collab_messages SET raw_key = $2, attachments = $3 WHERE id = $1`, mid, key, []storedAttachment{
 		{Index: 0, Filename: "report.pdf", ContentType: "application/pdf", Size: 15},
-		{Index: 1, Filename: "pic.png", ContentType: "image/png", Size: 9}})
+		{Index: 1, Filename: "pic.png", ContentType: "image/png", Size: 12}})
 	srv := w.api(nil)
 	get := func(path string) (*http.Response, string) {
 		t.Helper()
@@ -1482,7 +1482,7 @@ func TestAPIAttachmentServe(t *testing.T) {
 	if resp, _ := get(w.s.attachmentPath(mid, 1)); !strings.HasPrefix(resp.Header.Get("Content-Disposition"), "attachment") {
 		t.Fatalf("image without inline=1: %v", resp.Header)
 	}
-	if resp, body := get(w.s.attachmentPath(mid, 1) + "&inline=1"); resp.StatusCode != 200 || body != "\x89PNG fake" ||
+	if resp, body := get(w.s.attachmentPath(mid, 1) + "&inline=1"); resp.StatusCode != 200 || body != "\x89PNG\r\n\x1a\nfake" ||
 		!strings.HasPrefix(resp.Header.Get("Content-Disposition"), "inline") {
 		t.Fatalf("image inline: %d %v", resp.StatusCode, resp.Header)
 	}

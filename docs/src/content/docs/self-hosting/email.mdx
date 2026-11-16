@@ -96,9 +96,17 @@ in.desk.example.com.  MX  10  desk.example.com.
 
 The installer's `--wizard` can set this up.
 
-<Callout type="note" title="Sender checks with this receiver">
+<Callout type="warning" title="Sender checks with this receiver">
 
-The built-in receiver does not check senders (SPF, DKIM, DMARC). Mail it takes straight from a sender's server believes no `Authentication-Results` at all, whatever `INBOUND_AUTHSERV_ID` says, because the sender wrote every header in it: its DMARC verdict is unknown and nothing is flagged on it. If a mail server of yours that does check senders relays to it, list that server's authserv-id in `INBOUND_AUTHSERV_ID` and its address in `INBOUND_SMTP_RELAYS`: only mail it hands over has those results believed.
+The built-in receiver does not check senders (SPF, DKIM, DMARC). Anyone can send it mail that claims to come from one of your customers. Mail it takes straight from a sender's server believes no `Authentication-Results` at all, whatever `INBOUND_AUTHSERV_ID` says, because the sender wrote every header in it: its DMARC verdict is unknown.
+
+What opendesk does about it:
+
+- A reply it can match to a ticket only by the ticket's number (a `[#123]` subject tag or a `+t123` address tag) and the customer's From address is flagged as unverified on that ticket: it does not reopen the ticket, run automations or get an AI answer, the same as a reply that failed DMARC. Replies matched by the Message-ID of a message the ticket sent are not affected.
+- Reply-To redirection and trusted contact forms need a DMARC pass, so they never apply to this mail.
+- opendesk logs a warning at startup while no relay is listed.
+
+To check senders, put a mail server that does (Postfix with OpenDMARC, Rspamd, a hosted inbound service) in front of the receiver, list its authserv-id in `INBOUND_AUTHSERV_ID` and its address in `INBOUND_SMTP_RELAYS`: only mail it hands over has those results believed. Or receive through the Cloudflare Email Worker (Option A), which comes with Cloudflare's checks.
 
 </Callout>
 
@@ -116,7 +124,9 @@ Redelivery is safe: each raw message is stored once per mailbox, keyed by its `M
 
 ### Sender checks
 
-A customer is identified by the `From` address. A message whose `From` failed DMARC, as reported by a server in `INBOUND_AUTHSERV_ID` (or by Gmail or Microsoft 365 for those mailboxes), opens a ticket marked spam; on an existing conversation it is kept, flagged for agents, and changes nothing: the ticket is not reopened, and no automation, auto-reply or Ollie answer runs for it. Results count only from servers the message passed through: for mail that came by a forwarding address, Gmail's and Microsoft's own results are not believed, since they never received it.
+A customer is identified by the `From` address. A message whose `From` failed DMARC, as reported by a server in `INBOUND_AUTHSERV_ID` (or by Gmail or Microsoft 365 for those mailboxes), opens a ticket marked spam; on an existing conversation it is kept, flagged for agents, and changes nothing: the ticket is not reopened, and no automation, auto-reply or Ollie answer runs for it. Results count only from servers the message passed through: for mail that came by a forwarding address, Gmail's and Microsoft's own results are not believed, since they never received it. Mail the built-in SMTP receiver takes straight from a sender's server has no results at all; one it can match to a ticket only by the ticket's number (`[#123]`, `+t123`) is flagged in the same way.
+
+A delivery report (bounce) marks a reply failed only when it comes with the null sender, names the reply's Message-ID and one of its recipients, and arrives within 14 days of the send.
 
 A reply joins its conversation by the `Message-ID`s it names, whoever sends it, so a colleague the customer forwarded it to can write in. Someone the team and the customer never wrote to or copied is new to the conversation: their message is there for agents to read, and no automation or Ollie answer runs for it. `Reply-To` never changes who the customer is. Replies, automatic answers and surveys go to it when it belongs to the same organisation as `From` (`alerts@updates.acme.com` asking for answers at `jane@acme.com`), and to `From` otherwise. The one exception is a website contact form the mailbox trusts (Settings, the mailbox, Contact forms): when its message passed DMARC, the visitor in `Reply-To` is the customer.
 

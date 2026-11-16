@@ -42,7 +42,7 @@ describe("deliver", () => {
     expect(calls[0]!.body).toBe(RAW);
     const h = calls[0]!.init.headers as Record<string, string>;
     expect(h["OD-Inbound-Secret"]).toBeUndefined();
-    expect(h["OD-Inbound-Signature"]).toMatch(/^t=\d+,v1=[0-9a-f]{64}$/);
+    expect(h["OD-Inbound-Signature"]).toMatch(/^t=\d+,v2=[0-9a-f]{64}$/);
     expect(h["Content-Type"]).toBe("message/rfc822");
     expect(h["OD-Envelope-From"]).toBe("sender@example.com");
     expect(calls[0]!.init.method).toBe("POST");
@@ -140,7 +140,7 @@ describe("signInbound", () => {
   it("matches the API's HMAC-SHA256 over the timestamp, recipient, sender and message", async () => {
     const body = new TextEncoder().encode("Subject: hi\r\n\r\nhello").buffer as ArrayBuffer;
     // The same HMAC computed outside JavaScript (internal/email SignInbound signs alike).
-    const want = "c030b4033566ca50f8d5b887d26b405893d76b89ebaac855375d1978999d9e47";
-    expect(await signInbound("s3cret", 1700000000, "t0k3n@in.opendesk.sh", "sender@example.com", body)).toBe(`t=1700000000,v1=${want}`);
+    const want = "bbee85268e8760772c38c6da8a41ff9d5b2b666e799615843aaf9e2d402a8c7e";
+    expect(await signInbound("s3cret", 1700000000, "t0k3n@in.opendesk.sh", "sender@example.com", body)).toBe(`t=1700000000,v2=${want}`);
   });
 });

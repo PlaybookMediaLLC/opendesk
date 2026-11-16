@@ -102,6 +102,16 @@ func (p *pass) roleFolder(role string) *folderRow {
 	return best
 }
 
+// folderByID is the account's stored folder with this id, or nil.
+func (p *pass) folderByID(id uuid.UUID) *folderRow {
+	for _, f := range p.folders {
+		if f.ID == id {
+			return f
+		}
+	}
+	return nil
+}
+
 func (p *pass) touch(threadID uuid.UUID) {
 	if threadID != uuid.Nil && !slices.Contains(p.touched, threadID) {
 		p.touched = append(p.touched, threadID)
@@ -244,6 +254,10 @@ func (p *pass) update(ctx context.Context, tx pgx.Tx, m *storedMsg, st state) er
 	if st.FolderIDs == nil {
 		st.FolderIDs = []uuid.UUID{}
 	}
+	if st.Location != nil && sameJSON(st.Location, localLocation) && len(parseLocation(m.Location)) > 0 {
+		// The server's own copy, already located, wins over the mark of one it has none of.
+		st.Location = nil
+	}
 	sameFolders := sameSet(m.FolderIDs, st.FolderIDs)
 	sameLoc := st.Location == nil || sameJSON(m.Location, st.Location)
 	sameState := m.Unread == st.Unread && m.Starred == st.Starred && m.Draft == st.Draft && sameFolders
@@ -317,9 +331,17 @@ func setMessageFolders(ctx context.Context, tx pgx.Tx, messageID uuid.UUID, fold
 }
 
 // remove deletes a message gone from the provider; its raw source goes to the storage trash.
+// Its conversation keeps its Message-ID, so the same mail coming back joins the conversation
+// again even when the conversation was set aside meanwhile (recomputeThreads).
 func (p *pass) remove(ctx context.Context, tx pgx.Tx, m *storedMsg) error {
 	if m.RawKey != "" {
 		if _, err := tx.Exec(ctx, `INSERT INTO collab_storage_trash (key) VALUES ($1) ON CONFLICT DO NOTHING`, m.RawKey); err != nil {
+			return err
+		}
+	}
+	if m.MessageID != "" {
+		if _, err := tx.Exec(ctx, `UPDATE collab_threads SET gone_message_ids = (array_append(gone_message_ids, $2::text))[greatest(cardinality(gone_message_ids) - $3 + 2, 1):]
+			WHERE id = $1 AND NOT ($2 = ANY(gone_message_ids))`, m.ThreadID, m.MessageID, maxGoneMessageIDs); err != nil {
 			return err
 		}
 	}
@@ -331,21 +353,69 @@ func (p *pass) remove(ctx context.Context, tx pgx.Tx, m *storedMsg) error {
 	return nil
 }
 
-// removeOrphans deletes the account's messages gone from every folder at the provider,
-// at the end of a pass: for Microsoft those in no folder (categories are labels, not
-// folders), for IMAP those with no location
-// left (their folders can briefly differ from their locations after an action). Gmail
-// mail is never an orphan: archived mail is in no folder.
-func (p *pass) removeOrphans(ctx context.Context, tx pgx.Tx) error {
-	orphan := `NOT EXISTS (SELECT 1 FROM collab_message_folders mf JOIN collab_folders f ON f.id = mf.folder_id
-		WHERE mf.message_id = m.id AND f.kind = 'folder')`
+// Orphans (contracts/collab.md "Sync"): a message that no folder read in a pass shows may
+// still be at the provider (in a folder not read, moved during the pass, or a folder that
+// started over), so it is removed only after orphanPasses passes in a row, and at least
+// orphanGrace, have missed it, and after the provider was asked where it is
+// (relocateIMAP, relocateGraph). Gmail mail is never an orphan: archived mail is in no folder.
+const (
+	orphanPasses = 3
+	orphanGrace  = 30 * time.Minute
+	// relocateBatch bounds the orphans one pass asks the provider about.
+	relocateBatch = 100
+	// maxGoneMessageIDs bounds the Message-IDs a conversation keeps of mail removed from it.
+	maxGoneMessageIDs = 200
+)
+
+// orphanSQL is the predicate on collab_messages alias m of a message no folder shows: for
+// Microsoft one in no folder (categories are labels, not folders), for IMAP one with no
+// location left (its folders can briefly differ from its locations after an action),
+// except mail sent from opendesk that the server keeps no copy of (no Sent folder, or the
+// copy could not be appended: location "local"). "" for Gmail.
+func (p *pass) orphanSQL() string {
 	switch p.a.Provider {
 	case ProviderGoogle:
-		return nil
+		return ""
 	case ProviderIMAP:
-		orphan = `COALESCE(jsonb_array_length(m.location->'imap'), 0) = 0`
+		return `(COALESCE(jsonb_array_length(m.location->'imap'), 0) = 0 AND NOT COALESCE((m.location->>'local')::boolean, false))`
 	}
-	rows, err := tx.Query(ctx, `SELECT `+storedColumns+` FROM collab_messages m WHERE m.account_id = $1 AND `+orphan, p.a.ID)
+	return `NOT EXISTS (SELECT 1 FROM collab_message_folders mf JOIN collab_folders f ON f.id = mf.folder_id
+		WHERE mf.message_id = m.id AND f.kind = 'folder')`
+}
+
+// relocatable lists up to limit of the orphans to ask the provider about in this pass: those
+// missed for the first time, and those the sweep would remove at the end of it.
+func (p *pass) relocatable(ctx context.Context, q db.Querier, limit int) ([]*storedMsg, error) {
+	orphan := p.orphanSQL()
+	if orphan == "" {
+		return nil, nil
+	}
+	rows, err := q.Query(ctx, `SELECT `+storedColumns+` FROM collab_messages m WHERE m.account_id = $1 AND `+orphan+`
+		AND (m.orphan_passes = 0 OR (m.orphan_passes >= $3 - 1 AND m.orphaned_at <= now() - make_interval(secs => $4)))
+		ORDER BY m.orphan_passes DESC, m.id LIMIT $2`, p.a.ID, limit, orphanPasses, orphanGrace.Seconds())
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (*storedMsg, error) { return scanStored(r) })
+}
+
+// sweepOrphans ends a pass, in tx: a message seen again is no longer an orphan, one missed
+// counts one more pass, and one missed for long enough is removed.
+func (p *pass) sweepOrphans(ctx context.Context, tx pgx.Tx) error {
+	orphan := p.orphanSQL()
+	if orphan == "" {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `UPDATE collab_messages m SET orphaned_at = NULL, orphan_passes = 0
+		WHERE m.account_id = $1 AND m.orphaned_at IS NOT NULL AND NOT `+orphan, p.a.ID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE collab_messages m SET orphaned_at = COALESCE(m.orphaned_at, now()), orphan_passes = LEAST(m.orphan_passes + 1, 10000)
+		WHERE m.account_id = $1 AND `+orphan, p.a.ID); err != nil {
+		return err
+	}
+	rows, err := tx.Query(ctx, `SELECT `+storedColumns+` FROM collab_messages m WHERE m.account_id = $1 AND `+orphan+`
+		AND m.orphan_passes >= $2 AND m.orphaned_at <= now() - make_interval(secs => $3)`, p.a.ID, orphanPasses, orphanGrace.Seconds())
 	if err != nil {
 		return err
 	}
@@ -428,10 +498,14 @@ func (p *pass) insertMessage(ctx context.Context, tx pgx.Tx, in *newMessage) (uu
 		} else {
 			ct = "application/octet-stream"
 		}
+		// Files from outside are typed from their bytes (an active type is plain text) and a
+		// program is never served (attachmentHandler).
+		name := email.CleanFilename(part.FileName, ct)
+		ct, blocked := attachmentType(part.Content, name)
 		cid := email.NormalizeCID(part.ContentID)
 		inline := strings.EqualFold(part.Disposition, "inline") || cid != "" && part.Disposition == ""
-		atts = append(atts, storedAttachment{Index: i, Filename: email.CleanFilename(part.FileName, ct), ContentType: ct,
-			Size: int64(len(part.Content)), Inline: inline, ContentID: cid})
+		atts = append(atts, storedAttachment{Index: i, Filename: name, ContentType: ct,
+			Size: int64(len(part.Content)), Inline: inline && !blocked, ContentID: cid, Blocked: blocked})
 		if cid != "" {
 			cids[cid] = p.s.attachmentURL(id, i)
 		}
@@ -526,6 +600,11 @@ func (p *pass) insertMessage(ctx context.Context, tx pgx.Tx, in *newMessage) (uu
 	}
 	if err := setMessageFolders(ctx, tx, id, nonNil(in.State.FolderIDs)); err != nil {
 		return uuid.Nil, err
+	}
+	if p.a.Provider == ProviderIMAP && in.ThreadRemoteID == "" && msgID != "" {
+		if err := p.mergeThreads(ctx, tx, threadID, msgID); err != nil {
+			return uuid.Nil, err
+		}
 	}
 	if p.a.Visibility == VisibilityShared && p.a.HandlingEnabled && !in.State.Draft {
 		needsAction, updateHandling := false, false
@@ -625,6 +704,20 @@ func (p *pass) threadFor(ctx context.Context, tx pgx.Tx, in *newMessage, msgID, 
 			if !db.IsNotFound(err) {
 				return uuid.Nil, err
 			}
+		}
+		// Mail coming back to a conversation set aside when its mail went joins it again.
+		if keys := slices.DeleteFunc(append(slices.Clone(named), msgID), func(s string) bool { return s == "" }); len(keys) > 0 {
+			var id uuid.UUID
+			err := tx.QueryRow(ctx, `SELECT id FROM collab_threads WHERE account_id = $1 AND emptied_at IS NOT NULL AND gone_message_ids && $2
+				ORDER BY emptied_at DESC LIMIT 1`, p.a.ID, keys).Scan(&id)
+			if err == nil {
+				return id, nil
+			}
+			if !db.IsNotFound(err) {
+				return uuid.Nil, err
+			}
+		}
+		if len(named) > 0 {
 			remote = named[0]
 		} else {
 			remote = msgID
@@ -640,8 +733,60 @@ func (p *pass) threadFor(ctx context.Context, tx pgx.Tx, in *newMessage, msgID, 
 	return id, err
 }
 
-// recomputeThreads sets each conversation's state from its messages and deletes the
-// conversations left without any.
+// threadTeamDataSQL is the predicate on collab_threads alias t of a conversation the team
+// worked on: comments, assignees, shares of its own or AI draft outcomes.
+const threadTeamDataSQL = `(EXISTS (SELECT 1 FROM collab_comments c WHERE c.thread_id = t.id)
+	OR EXISTS (SELECT 1 FROM collab_assignees ca WHERE ca.thread_id = t.id)
+	OR EXISTS (SELECT 1 FROM collab_shares sh WHERE sh.thread_id = t.id)
+	OR EXISTS (SELECT 1 FROM collab_ai_drafts d WHERE d.thread_id = t.id))`
+
+// mergeThreads moves into the conversation into the IMAP conversations keyed on msgID, the
+// message just stored there ("Conversations"): mail stored before the message it answers (a
+// history import reads newest first) started a conversation named after that message. Their
+// messages, comments, assignees, shares and AI draft outcomes move; the emptied conversation
+// goes.
+func (p *pass) mergeThreads(ctx context.Context, tx pgx.Tx, into uuid.UUID, msgID string) error {
+	rows, err := tx.Query(ctx, `SELECT id FROM collab_threads WHERE account_id = $1 AND remote_id = $2 AND id <> $3`,
+		p.a.ID, truncateRunes(msgID, 500), into)
+	if err != nil {
+		return err
+	}
+	from, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	if err != nil || len(from) == 0 {
+		return err
+	}
+	for _, f := range from {
+		for _, st := range []struct {
+			q    string
+			args []any
+		}{
+			{`UPDATE collab_messages SET thread_id = $2 WHERE thread_id = $1 AND account_id = $3`, []any{f, into, p.a.ID}},
+			{`UPDATE collab_comments SET thread_id = $2 WHERE thread_id = $1`, []any{f, into}},
+			{`UPDATE collab_ai_drafts SET thread_id = $2 WHERE thread_id = $1 AND account_id = $3`, []any{f, into, p.a.ID}},
+			{`INSERT INTO collab_assignees (thread_id, user_id, assigned_by, created_at)
+				SELECT $2, user_id, assigned_by, created_at FROM collab_assignees WHERE thread_id = $1 ON CONFLICT DO NOTHING`, []any{f, into}},
+			{`INSERT INTO collab_shares (id, workspace_id, thread_id, everyone, team_id, user_id, shared_by, created_at)
+				SELECT gen_random_uuid(), workspace_id, $2, everyone, team_id, user_id, shared_by, created_at FROM collab_shares
+				WHERE thread_id = $1 ON CONFLICT DO NOTHING`, []any{f, into}},
+			{`UPDATE collab_threads t SET needs_action = t.needs_action OR o.needs_action, ticket_id = COALESCE(t.ticket_id, o.ticket_id),
+				gone_message_ids = t.gone_message_ids || o.gone_message_ids
+				FROM collab_threads o WHERE t.id = $2 AND o.id = $1 AND t.account_id = $3 AND o.account_id = $3`, []any{f, into, p.a.ID}},
+			{`DELETE FROM collab_threads WHERE id = $1 AND account_id = $2`, []any{f, p.a.ID}},
+		} {
+			if _, err := tx.Exec(ctx, st.q, st.args...); err != nil {
+				return err
+			}
+		}
+		p.touch(f)
+	}
+	p.touch(into)
+	return nil
+}
+
+// recomputeThreads sets each conversation's state from its messages. A conversation left
+// without any is deleted, except one the team worked on (threadTeamDataSQL): that one is set
+// aside (emptied_at, listed nowhere) with its comments, assignees and shares, and comes back
+// when its mail does (threadFor).
 func recomputeThreads(ctx context.Context, tx pgx.Tx, a *accountRow, threadIDs []uuid.UUID) error {
 	if len(threadIDs) == 0 {
 		return nil
@@ -734,14 +879,20 @@ func recomputeThreads(ctx context.Context, tx pgx.Tx, a *accountRow, threadIDs [
 		}
 		if _, err := tx.Exec(ctx, `UPDATE collab_threads SET subject = $2, snippet = $3, participants = $4, last_message_at = $5,
 			message_count = $6, unread = $7, starred = $8, has_attachments = $9, folder_ids = $10,
-			search = to_tsvector('simple', $11), addresses = $12, updated_at = now() WHERE id = $1`,
+			search = to_tsvector('simple', $11), addresses = $12, emptied_at = NULL, updated_at = now() WHERE id = $1`,
 			tid, subject, newest.snippet, participants, newest.sentAt, len(list), unread, starred, files, folders, doc, addresses); err != nil {
 			return err
 		}
 	}
 	if len(empty) > 0 {
+		if _, err := tx.Exec(ctx, `UPDATE collab_threads t SET emptied_at = COALESCE(t.emptied_at, now()), message_count = 0, unread = false,
+			starred = false, has_attachments = false, folder_ids = '{}', needs_action = false, snoozed_until = NULL, updated_at = now()
+			WHERE t.id = ANY($1) AND t.account_id = $2 AND NOT EXISTS (SELECT 1 FROM collab_messages m WHERE m.thread_id = t.id)
+			AND `+threadTeamDataSQL, empty, a.ID); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, `DELETE FROM collab_threads t WHERE t.id = ANY($1) AND t.account_id = $2
-			AND NOT EXISTS (SELECT 1 FROM collab_messages m WHERE m.thread_id = t.id)`, empty, a.ID); err != nil {
+			AND NOT EXISTS (SELECT 1 FROM collab_messages m WHERE m.thread_id = t.id) AND NOT `+threadTeamDataSQL, empty, a.ID); err != nil {
 			return err
 		}
 	}

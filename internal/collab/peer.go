@@ -92,7 +92,7 @@ func PeerExcerpts(ctx context.Context, q db.Querier, wid, owner uuid.UUID, modes
 	tsq := strings.Join(terms, " or ")
 	rows, err := q.Query(ctx, `SELECT t.id, t.account_id, t.subject, t.last_message_at FROM collab_threads t
 		JOIN collab_accounts a ON a.id = t.account_id
-		WHERE t.workspace_id = $1 AND a.workspace_id = $1 AND a.owner_id = $2 AND a.id = ANY($3)
+		WHERE t.workspace_id = $1 AND a.workspace_id = $1 AND a.owner_id = $2 AND a.id = ANY($3) AND t.emptied_at IS NULL
 			AND t.search @@ websearch_to_tsquery('simple', $4)
 			AND NOT EXISTS (SELECT 1 FROM collab_folders f WHERE f.id = ANY(t.folder_ids) AND f.role IN ('spam', 'trash'))
 		ORDER BY ts_rank(t.search, websearch_to_tsquery('simple', $4)) DESC, t.last_message_at DESC, t.id DESC

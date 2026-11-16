@@ -6,10 +6,15 @@ this worker, which POSTs the raw message to the API:
 
 ```
 POST https://api.opendesk.sh/v1/inbound/email?to=<recipient>
-OD-Inbound-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256 keyed with INBOUND_SECRET>
+OD-Inbound-Signature: t=<unix seconds>,v2=<hex HMAC-SHA256 keyed with INBOUND_SECRET>
 OD-Envelope-From: <envelope sender>
 Content-Type: message/rfc822
 ```
+
+The signature covers `v2\n<t>\n<len(recipient)>:<recipient>\n<len(envelope sender)>:<envelope sender>\n`
+followed by the raw message, each length in UTF-8 bytes. The API still accepts the earlier
+`v1=` signature (over `<t>.<recipient>.<envelope sender>.` and the message) from a worker
+deployed before this one; deploy this worker to move to `v2`.
 
 `OD-Envelope-From` is the SMTP envelope sender (empty for the null sender of a
 delivery report); the API counts a delivery report as a bounce only with the null

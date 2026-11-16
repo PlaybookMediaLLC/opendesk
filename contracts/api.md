@@ -1262,7 +1262,7 @@ runs of whitespace collapsed, and refuse `<`, `>` and control characters (`422 v
 | DELETE | `/v1/email-templates/{brand_id}/{kind}` | admin → 204, back to the default |
 | POST | `/v1/templates/preview` | agent+. `{kind, body_html?, subject?, options?, brand_id?, team_id?, mailbox_id?, alias?, ticket_id?}` (`alias`: one of `mailbox_id`'s aliases, previewed as mail written to it: its name, signature and, without `brand_id`, its brand) → `{subject, html, text, problems}` |
 | POST | `/v1/templates/test` | agent+, users only. Same body; sends the preview to the caller's login address, `[Test]` subject. 10 an hour (`429`) |
-| POST | `/v1/inbound/email` | header `OD-Inbound-Signature: t=<unix seconds>,v1=<hex>`, an HMAC-SHA256 keyed with `INBOUND_SECRET` over `<t>.<recipient>.<envelope sender>.` followed by the raw message, refused when more than five minutes old, query `to=<rcpt>`, header `OD-Envelope-From`, body raw RFC 822 → 202 (Cloudflare Email Worker / SES) |
+| POST | `/v1/inbound/email` | header `OD-Inbound-Signature: t=<unix seconds>,v2=<hex>`, an HMAC-SHA256 keyed with `INBOUND_SECRET` over `v2\n<t>\n<len(recipient)>:<recipient>\n<len(envelope sender)>:<envelope sender>\n` (lengths in bytes) followed by the raw message (the earlier `v1=<hex>` over `<t>.<recipient>.<envelope sender>.` and the message is still accepted from relays that sign that way), refused when more than five minutes old, query `to=<rcpt>`, header `OD-Envelope-From`, body raw RFC 822 → 202 (Cloudflare Email Worker / SES) |
 
 Reading the inbox directly (`oauth_grant: "api"`): the per-mailbox sync job (`email.sync_mailbox`, queued
 every minute by `email.sync_due` for each due mailbox) reads it over HTTPS, whatever `MAILBOX_IMAP` says,

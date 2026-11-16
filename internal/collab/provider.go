@@ -3,6 +3,7 @@ package collab
 import (
 	"context"
 	"encoding/json"
+	"time"
 )
 
 // Provider is one account's connection to its mail provider: Gmail, Microsoft Graph or
@@ -56,6 +57,9 @@ type ApplyOp struct {
 	// Special are the account's special folders by role (inbox, archive, trash, spam),
 	// for the actions that move to them.
 	Special map[string]RemoteFolder
+	// Before is when the action was taken (zero: unknown). A Gmail archive, move or spam
+	// also takes the conversation's messages from before it that opendesk does not store.
+	Before time.Time
 }
 
 // SendInfo is what a provider needs besides the raw message.

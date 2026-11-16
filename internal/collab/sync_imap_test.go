@@ -275,6 +275,14 @@ func TestIMAPSync(t *testing.T) {
 	if err := w.s.syncAccount(w.ctx, a.ID); err != nil {
 		t.Fatal(err)
 	}
+	// Gone from every folder: kept as an orphan for a while, then removed.
+	if n := w.count(`SELECT count(*) FROM collab_messages WHERE account_id = $1 AND remote_id = 'p1@example.com' AND orphaned_at IS NOT NULL`, a.ID); n != 1 {
+		t.Fatal("a message missed once is not kept as an orphan")
+	}
+	w.ageOrphans(a)
+	if err := w.s.syncAccount(w.ctx, a.ID); err != nil {
+		t.Fatal(err)
+	}
 	if n := w.count(`SELECT count(*) FROM collab_messages WHERE account_id = $1 AND remote_id = 'p1@example.com'`, a.ID); n != 0 {
 		t.Fatal("a message gone from every folder is kept")
 	}
@@ -390,4 +398,12 @@ func TestIMAPFolderRoles(t *testing.T) {
 			t.Fatalf("path: %+v", f)
 		}
 	}
+}
+
+// ageOrphans makes the account's orphans due for the sweep, as if passes had missed them
+// for longer than the grace.
+func (w *world) ageOrphans(a *accountRow) {
+	w.t.Helper()
+	mustExec(w.t, w.d, `UPDATE collab_messages SET orphaned_at = now() - interval '2 hours', orphan_passes = $2
+		WHERE account_id = $1 AND orphaned_at IS NOT NULL`, a.ID, orphanPasses)
 }

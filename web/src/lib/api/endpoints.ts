@@ -1033,8 +1033,13 @@ export const api = {
       addRule: (id: string, b: { sender: string; category: string }) => http.post<T.MailCategoryRule>(`/v1/collab/accounts/${id}/category-rules`, b),
       removeRule: (id: string, ruleId: string) => http.del(`/v1/collab/accounts/${id}/category-rules/${ruleId}`),
     },
-    /** Sent through the provider within the request (502 send_failed, nothing stored). */
-    send: (b: CollabSendBody) => http.create<T.MailMessage>("/v1/collab/messages", b),
+    /**
+     * Sent through the provider within the request (502 send_failed, nothing stored). The same
+     * idempotencyKey for the same message answers the message already sent instead of sending
+     * it again (409 send_in_progress while that send's outcome is unknown).
+     */
+    send: (b: CollabSendBody, idempotencyKey?: string) =>
+      idempotencyKey ? http.post<T.MailMessage>("/v1/collab/messages", b, { headers: { "Idempotency-Key": idempotencyKey } }) : http.create<T.MailMessage>("/v1/collab/messages", b),
     /** Read from the message's source at the provider (502 provider_error). */
     messageDetails: (id: string) => http.get<T.MailMessageDetails>(`/v1/collab/messages/${id}/details`),
     /** Drafts, kept at the provider (contracts/collab.md "Drafts"). */

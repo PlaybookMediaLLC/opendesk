@@ -158,23 +158,61 @@ func (s *sesMailer) Send(ctx context.Context, m Mail) error {
 
 type smtpMailer struct{ o Options }
 
+// smtpDialTimeout bounds connecting to the SMTP server, smtpSessionTimeout a whole send
+// (when the caller's context sets no earlier deadline), and smtpCommandTimeout each reply:
+// a server that stops answering never holds a worker.
+const (
+	smtpDialTimeout    = 15 * time.Second
+	smtpSessionTimeout = 2 * time.Minute
+	smtpCommandTimeout = time.Minute
+)
+
+// dial connects to the SMTP server within the context and the timeouts above. Call stop
+// when the session is over.
+func (s *smtpMailer) dial(ctx context.Context) (c *smtp.Client, stop func() bool, err error) {
+	addr := net.JoinHostPort(s.o.Host, strconv.Itoa(s.o.Port))
+	d := net.Dialer{Timeout: smtpDialTimeout}
+	conn, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, nil, err
+	}
+	deadline := time.Now().Add(smtpSessionTimeout)
+	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
+		deadline = dl
+	}
+	_ = conn.SetDeadline(deadline)
+	stop = context.AfterFunc(ctx, func() { _ = conn.Close() })
+	cfg := &tls.Config{ServerName: s.o.Host, MinVersion: tls.VersionTLS12}
+	switch s.o.TLS {
+	case "tls":
+		tc := tls.Client(conn, cfg)
+		if err := tc.HandshakeContext(ctx); err != nil {
+			stop()
+			_ = conn.Close()
+			return nil, nil, err
+		}
+		c = smtp.NewClient(tc)
+	case "none":
+		c = smtp.NewClient(conn)
+	default:
+		if c, err = smtp.NewClientStartTLS(conn, cfg); err != nil {
+			stop()
+			_ = conn.Close()
+			return nil, nil, err
+		}
+	}
+	c.CommandTimeout, c.SubmissionTimeout = smtpCommandTimeout, smtpCommandTimeout
+	return c, stop, nil
+}
+
 func (s *smtpMailer) Send(ctx context.Context, m Mail) error {
 	from, _ := mail.ParseAddress(s.o.From)
 	msg := Build(s.o.From, m)
-	addr := net.JoinHostPort(s.o.Host, strconv.Itoa(s.o.Port))
-	var c *smtp.Client
-	var err error
-	switch s.o.TLS {
-	case "tls":
-		c, err = smtp.DialTLS(addr, &tls.Config{ServerName: s.o.Host, MinVersion: tls.VersionTLS12})
-	case "none":
-		c, err = smtp.Dial(addr)
-	default:
-		c, err = smtp.DialStartTLS(addr, &tls.Config{ServerName: s.o.Host, MinVersion: tls.VersionTLS12})
-	}
+	c, stop, err := s.dial(ctx)
 	if err != nil {
 		return fmt.Errorf("smtp dial: %w", err)
 	}
+	defer stop()
 	defer c.Close()
 	if s.o.Username != "" {
 		if err := c.Auth(sasl.NewPlainClient("", s.o.Username, s.o.Password)); err != nil {

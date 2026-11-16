@@ -2,10 +2,15 @@ package collab
 
 import (
 	"context"
+	"encoding/json"
 	"io"
+	"net/http"
+	"net/url"
 	"slices"
+	"strings"
 	"time"
 
+	"github.com/emersion/go-imap/v2"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
@@ -17,8 +22,9 @@ import (
 )
 
 // Actions on conversations (contracts/collab.md "Actions"): applied at once in opendesk
-// (applyLocal), then at the provider by collab.apply, then a sync brings the provider's
-// state back, which also undoes an action the provider refused for good.
+// (applyLocal), then at the provider by collab.apply on the messages they changed, then a
+// sync brings the provider's state back. An action the provider refused for good has its
+// messages read back from the provider (readBack).
 //
 // Which messages an action touches:
 //   - read, unstar: every message; unread, star: the newest message of each conversation.
@@ -167,7 +173,8 @@ func (s *service) applyLocal(ctx context.Context, tx pgx.Tx, a *accountRow, thre
 			labels[f.ID] = true
 		}
 	}
-	for _, m := range pick(action, msgs) {
+	picked := pick(action, msgs)
+	for _, m := range picked {
 		err := change(m, func(st *state) {
 			switch action {
 			case ActionRead:
@@ -208,10 +215,17 @@ func (s *service) applyLocal(ctx context.Context, tx pgx.Tx, a *accountRow, thre
 	if err := projectGmailCategories(ctx, tx, a, threadIDs); err != nil {
 		return err
 	}
-	if s.d.Jobs == nil || a.Config.Demo {
+	if s.d.Jobs == nil || a.Config.Demo || len(picked) == 0 {
 		return nil // a demo account's mail is only here: nothing to make at a provider
 	}
-	args := jobs.CollabApplyArgs{WorkspaceID: a.WorkspaceID, AccountID: a.ID, ThreadIDs: threadIDs, Action: action}
+	// The job is pinned to the messages changed here: mail that arrives before it runs keeps
+	// its own state at the provider.
+	mids := make([]uuid.UUID, 0, len(picked))
+	for _, m := range picked {
+		mids = append(mids, m.ID)
+	}
+	at := time.Now()
+	args := jobs.CollabApplyArgs{WorkspaceID: a.WorkspaceID, AccountID: a.ID, ThreadIDs: threadIDs, Action: action, MessageIDs: mids, At: &at}
 	if folder != nil {
 		args.FolderID = &folder.ID
 	}
@@ -306,9 +320,10 @@ func removeID(list []uuid.UUID, id uuid.UUID) []uuid.UUID {
 	return slices.DeleteFunc(list, func(x uuid.UUID) bool { return x == id })
 }
 
-// applyRemote makes a queued action at the provider. A refusal for good is logged and
-// left to the next sync to undo; passing failures are retried by River. Either way a
-// sync follows, so opendesk shows what the provider has.
+// applyRemote makes a queued action at the provider. A refusal for good is logged and the
+// messages it was to change are read again from the provider (readBack): a change the
+// provider refused leaves nothing in its history or delta for the sync to bring back.
+// Passing failures are retried by River. Either way a sync follows.
 func (s *service) applyRemote(ctx context.Context, job *river.Job[jobs.CollabApplyArgs]) error {
 	args := job.Args
 	if args.CategoryIntentID != nil || args.Action == ActionCategorize {
@@ -333,6 +348,8 @@ func (s *service) applyRemote(ctx context.Context, job *river.Job[jobs.CollabApp
 			s.log.Info("collab action refused by the provider", "account_id", a.ID, "action", args.Action, "reason", safeError(err))
 			if isReconnect(err) {
 				_ = s.recordSyncError(ctx, a, err)
+			} else if rerr := s.readBack(ctx, a, args); rerr != nil {
+				s.log.Info("collab state not read back after a refused action", "account_id", a.ID, "reason", safeError(rerr))
 			}
 		}
 		return s.queueSync(ctx, s.d.DB.Pool, a.ID)
@@ -340,8 +357,22 @@ func (s *service) applyRemote(ctx context.Context, job *river.Job[jobs.CollabApp
 	return err
 }
 
+// jobMessages loads the stored messages a queued action applies to: those it was pinned
+// to, else (a job queued before pinning) every message of its conversations.
+func jobMessages(ctx context.Context, q db.Querier, a *accountRow, args jobs.CollabApplyArgs) ([]actionMessage, error) {
+	msgs, err := actionMessages(ctx, q, a, args.ThreadIDs)
+	if err != nil || len(args.MessageIDs) == 0 {
+		return msgs, err
+	}
+	pinned := make(map[uuid.UUID]bool, len(args.MessageIDs))
+	for _, id := range args.MessageIDs {
+		pinned[id] = true
+	}
+	return slices.DeleteFunc(msgs, func(m actionMessage) bool { return !pinned[m.ID] }), nil
+}
+
 func (s *service) applyAtProvider(ctx context.Context, a *accountRow, args jobs.CollabApplyArgs) error {
-	msgs, err := actionMessages(ctx, s.d.DB.Pool, a, args.ThreadIDs)
+	msgs, err := jobMessages(ctx, s.d.DB.Pool, a, args)
 	if err != nil || len(msgs) == 0 {
 		return err
 	}
@@ -350,6 +381,9 @@ func (s *service) applyAtProvider(ctx context.Context, a *accountRow, args jobs.
 		return err
 	}
 	op := ApplyOp{Action: args.Action, Special: map[string]RemoteFolder{}}
+	if args.At != nil {
+		op.Before = *args.At
+	}
 	var target *folderRow
 	for _, f := range folders {
 		if f.Role != nil {
@@ -403,6 +437,191 @@ func (s *service) applyAtProvider(ctx context.Context, a *accountRow, args jobs.
 	return prov.Apply(ctx, op)
 }
 
+// readBackMax bounds the messages one refused action reads again.
+const readBackMax = 500
+
+// readBack reads the messages a refused action was to change from the provider and writes
+// what it has: labels or flags, and folders (contracts/collab.md "Actions"). A message the
+// provider no longer has is removed (Gmail, Microsoft) or loses that location (IMAP).
+func (s *service) readBack(ctx context.Context, a *accountRow, args jobs.CollabApplyArgs) error {
+	msgs, err := jobMessages(ctx, s.d.DB.Pool, a, args)
+	if err != nil || len(msgs) == 0 {
+		return err
+	}
+	// A sent message stored under an id of opendesk's own ("sent:") has none at the provider.
+	msgs = slices.DeleteFunc(msgs, func(m actionMessage) bool { return strings.HasPrefix(m.RemoteID, "sent:") })
+	if len(msgs) > readBackMax {
+		msgs = msgs[len(msgs)-readBackMax:]
+	}
+	if len(msgs) == 0 {
+		return nil
+	}
+	prov, err := s.provider(ctx, a)
+	if err != nil {
+		return err
+	}
+	defer prov.Close()
+	p, err := s.newPass(ctx, s.d.DB.Pool, a)
+	if err != nil {
+		return err
+	}
+	switch pr := prov.(type) {
+	case *gmailProvider:
+		return s.readBackGmail(ctx, p, pr, msgs)
+	case *graphProvider:
+		return s.readBackGraph(ctx, p, pr, msgs)
+	case *imapProvider:
+		return s.readBackIMAP(ctx, p, pr, msgs)
+	}
+	return nil
+}
+
+func (s *service) readBackGmail(ctx context.Context, p *pass, g *gmailProvider, msgs []actionMessage) error {
+	ids := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		ids = append(ids, m.RemoteID)
+	}
+	res, errs := fetchEach(ctx, gmailFetchers, ids, g.fork, func(ctx context.Context, g *gmailProvider, id string) (*gmailMessage, error) {
+		var m gmailMessage
+		err := g.do(ctx, http.MethodGet, "/messages/"+url.PathEscape(id)+"?format=minimal", nil, &m)
+		return &m, err
+	})
+	return p.batch(ctx, func(tx pgx.Tx) error {
+		for i, m := range msgs {
+			switch {
+			case isNotFound(errs[i]):
+				if err := p.remove(ctx, tx, m.storedMsg); err != nil {
+					return err
+				}
+			case errs[i] != nil || res[i] == nil:
+			default:
+				if err := p.update(ctx, tx, m.storedMsg, p.gmailState(res[i].LabelIDs)); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+}
+
+func (s *service) readBackGraph(ctx context.Context, p *pass, g *graphProvider, msgs []actionMessage) error {
+	ids := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		ids = append(ids, m.RemoteID)
+	}
+	res, errs := fetchEach(ctx, graphFetchers, ids, g.fork, func(ctx context.Context, g *graphProvider, id string) (*graphMessage, error) {
+		var m graphMessage
+		err := g.do(ctx, http.MethodGet, "/me/messages/"+url.PathEscape(id)+"?$select="+graphDeltaSelect, nil, &m)
+		return &m, err
+	})
+	return p.batch(ctx, func(tx pgx.Tx) error {
+		for i, m := range msgs {
+			switch {
+			case isNotFound(errs[i]):
+				if err := p.remove(ctx, tx, m.storedMsg); err != nil {
+					return err
+				}
+				continue
+			case errs[i] != nil || res[i] == nil:
+				continue
+			}
+			gm := res[i]
+			st := state{Unread: !gm.IsRead, Starred: gm.Flag.FlagStatus == "flagged", Draft: gm.IsDraft, FolderIDs: []uuid.UUID{}}
+			if f, ok := p.folders[gm.ParentFolderID]; ok && f.Kind == KindFolder {
+				st.FolderIDs = append(st.FolderIDs, f.ID)
+			} else {
+				// A folder opendesk does not keep: the message keeps the folders it has.
+				for _, id := range m.FolderIDs {
+					if f := p.folderByID(id); f != nil && f.Kind == KindFolder {
+						st.FolderIDs = append(st.FolderIDs, id)
+					}
+				}
+			}
+			cats, err := p.categoryIDs(ctx, tx, gm.Categories)
+			if err != nil {
+				return err
+			}
+			st.FolderIDs = append(st.FolderIDs, cats...)
+			if err := p.update(ctx, tx, m.storedMsg, st); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (s *service) readBackIMAP(ctx context.Context, p *pass, ip *imapProvider, msgs []actionMessage) error {
+	c, err := ip.session(ctx)
+	if err != nil {
+		return err
+	}
+	byFolder := map[string][]imapLoc{}
+	order := []string{}
+	for _, m := range msgs {
+		for _, l := range parseLocation(m.Location) {
+			if _, ok := byFolder[l.Folder]; !ok {
+				order = append(order, l.Folder)
+			}
+			byFolder[l.Folder] = append(byFolder[l.Folder], l)
+		}
+	}
+	checked := map[string]bool{}
+	present := map[imapLoc][]imap.Flag{}
+	for _, f := range order {
+		sel, err := c.Select(f, &imap.SelectOptions{ReadOnly: true}).Wait()
+		if err != nil {
+			if isNonExistent(err) {
+				checked[f] = true
+				continue
+			}
+			return opError("opening a folder", err)
+		}
+		checked[f] = true
+		uids := []uint32{}
+		for _, l := range byFolder[f] {
+			if l.Validity == sel.UIDValidity {
+				uids = append(uids, l.UID)
+			}
+		}
+		if len(uids) == 0 {
+			continue
+		}
+		got, err := c.Fetch(uidSet(uids), &imap.FetchOptions{UID: true, Flags: true}).Collect()
+		if err != nil {
+			return opError("reading flags", err)
+		}
+		for _, x := range got {
+			present[imapLoc{Folder: f, Validity: sel.UIDValidity, UID: uint32(x.UID)}] = x.Flags
+		}
+	}
+	return p.batch(ctx, func(tx pgx.Tx) error {
+		for _, m := range msgs {
+			keep := []imapLoc{}
+			var flags []imap.Flag
+			read := false
+			for _, l := range parseLocation(m.Location) {
+				if !checked[l.Folder] {
+					keep = append(keep, l)
+					continue
+				}
+				if fl, ok := present[l]; ok {
+					keep, flags, read = append(keep, l), fl, true
+				}
+			}
+			var err error
+			if read {
+				err = p.update(ctx, tx, m.storedMsg, p.imapState(flags, keep))
+			} else {
+				err = p.setLocs(ctx, tx, m.storedMsg, keep)
+			}
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 func (m actionMessage) ref(threadRemoteID string) MessageRef {
 	return MessageRef{RemoteID: m.RemoteID, ThreadRemoteID: threadRemoteID, Location: m.Location}
 }
@@ -434,7 +653,7 @@ func (s *service) storeSent(ctx context.Context, a *accountRow, raw []byte, ref 
 		}
 	}
 	in := &newMessage{RemoteID: remote, ThreadRemoteID: ref.ThreadRemoteID, Raw: raw, Date: time.Now(),
-		State: state{FolderIDs: folders, Location: ref.Location}, SentBy: &sentBy, ThreadID: threadID}
+		State: state{FolderIDs: folders, Location: sentLocation(a, ref)}, SentBy: &sentBy, ThreadID: threadID}
 	var id uuid.UUID
 	err = p.batch(ctx, func(tx pgx.Tx) error {
 		var err error
@@ -451,6 +670,15 @@ func (s *service) storeSent(ctx context.Context, a *accountRow, raw []byte, ref 
 		return uuid.Nil, httpx.E(422, "validation_error", "The message could not be read back to store it.")
 	}
 	return id, nil
+}
+
+// sentLocation is where a message the account just sent is at the provider: the copy's own
+// location, or for IMAP mail the server kept no copy of, localLocation.
+func sentLocation(a *accountRow, ref SentRef) json.RawMessage {
+	if a.Provider == ProviderIMAP && len(parseLocation(ref.Location)) == 0 {
+		return localLocation
+	}
+	return ref.Location
 }
 
 // loadRaw reads a stored message's raw source: from storage (raw_key), else the provider.

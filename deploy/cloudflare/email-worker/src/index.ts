@@ -4,13 +4,15 @@
 // worker, which POSTs the raw RFC 822 bytes to the API:
 //
 //   POST {INBOUND_URL}?to=<rcpt>
-//   OD-Inbound-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256>
+//   OD-Inbound-Signature: t=<unix seconds>,v2=<hex HMAC-SHA256>
 //   OD-Envelope-From: <envelope sender>
 //   Content-Type: message/rfc822
 //
 // The signature is HMAC-SHA256, keyed with INBOUND_SECRET, over
-// "<t>.<rcpt>.<envelope sender>." followed by the raw message; the API refuses one
-// older than five minutes, so each attempt signs again (CASA 7.2).
+// "v2\n<t>\n<bytes of rcpt>:<rcpt>\n<bytes of envelope sender>:<envelope sender>\n"
+// followed by the raw message: each address carries its length in UTF-8 bytes, so the
+// boundary between them is signed too. The API refuses a signature older than five
+// minutes, so each attempt signs again (CASA 7.2).
 //
 // Body handling: the message is read once into memory and the same bytes are
 // sent on every attempt. A ReadableStream can be consumed only once, so a
@@ -32,12 +34,13 @@
 export async function signInbound(secret: string, t: number, to: string, from: string, body: ArrayBuffer): Promise<string> {
   const enc = new TextEncoder();
   const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const prefix = enc.encode(`${t}.${to}.${from}.`);
+  const field = (v: string) => `${enc.encode(v).byteLength}:${v}`;
+  const prefix = enc.encode(`v2\n${t}\n${field(to)}\n${field(from)}\n`);
   const data = new Uint8Array(prefix.byteLength + body.byteLength);
   data.set(prefix, 0);
   data.set(new Uint8Array(body), prefix.byteLength);
   const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, data));
-  return `t=${t},v1=${Array.from(mac, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+  return `t=${t},v2=${Array.from(mac, (b) => b.toString(16).padStart(2, "0")).join("")}`;
 }
 
 export interface Env {

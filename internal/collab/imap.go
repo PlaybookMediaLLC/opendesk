@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net"
 	"slices"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/useopendesk/opendesk/internal/email"
@@ -348,6 +350,11 @@ func imapFolders(list []*imap.ListData) []RemoteFolder {
 			out[i].Role = role
 			has[role] = true
 		}
+		// Gmail's All Mail, on a server that does not say SPECIAL-USE.
+		if path := strings.ToLower(out[i].Path); !has[RoleAll] && (path == "[gmail]/all mail" || path == "[google mail]/all mail") {
+			out[i].Role = RoleAll
+			has[RoleAll] = true
+		}
 	}
 	sortFolders(out)
 	return out
@@ -487,15 +494,34 @@ func (p *imapProvider) Apply(ctx context.Context, op ApplyOp) error {
 	if err != nil {
 		return err
 	}
-	byFolder := map[string][]uint32{}
+	byFolder := map[string][]imapLoc{}
 	folders := []string{}
 	for _, m := range op.Messages {
 		for _, loc := range parseLocation(m.Location) {
 			if _, ok := byFolder[loc.Folder]; !ok {
 				folders = append(folders, loc.Folder)
 			}
-			byFolder[loc.Folder] = append(byFolder[loc.Folder], loc.UID)
+			byFolder[loc.Folder] = append(byFolder[loc.Folder], loc)
 		}
+	}
+	// A stored UID names a message only while its folder's UIDVALIDITY is the one it was read
+	// with: locations of a folder that started over are left alone (the sync that follows
+	// finds the messages again).
+	selectFolder := func(f string) ([]uint32, error) {
+		sel, err := c.Select(f, nil).Wait()
+		if err != nil {
+			if isNonExistent(err) {
+				return nil, nil
+			}
+			return nil, opError("opening a folder", err)
+		}
+		uids := []uint32{}
+		for _, l := range byFolder[f] {
+			if l.Validity == sel.UIDValidity {
+				uids = append(uids, l.UID)
+			}
+		}
+		return uids, nil
 	}
 	var store *imap.StoreFlags
 	switch op.Action {
@@ -510,13 +536,14 @@ func (p *imapProvider) Apply(ctx context.Context, op ApplyOp) error {
 	}
 	if store != nil {
 		for _, f := range folders {
-			if _, err := c.Select(f, nil).Wait(); err != nil {
-				if isNonExistent(err) {
-					continue
-				}
-				return opError("opening a folder", err)
+			uids, err := selectFolder(f)
+			if err != nil {
+				return err
 			}
-			if err := c.Store(uidSet(byFolder[f]), store, nil).Close(); err != nil {
+			if len(uids) == 0 {
+				continue
+			}
+			if err := c.Store(uidSet(uids), store, nil).Close(); err != nil {
 				return opError("changing flags", err)
 			}
 		}
@@ -543,15 +570,48 @@ func (p *imapProvider) Apply(ctx context.Context, op ApplyOp) error {
 		if f == target.RemoteID || stay[f] {
 			continue
 		}
-		if _, err := c.Select(f, nil).Wait(); err != nil {
-			if isNonExistent(err) {
-				continue
-			}
-			return opError("opening a folder", err)
+		uids, err := selectFolder(f)
+		if err != nil {
+			return err
 		}
-		if _, err := c.Move(uidSet(byFolder[f]), target.RemoteID).Wait(); err != nil {
+		if len(uids) == 0 {
+			continue
+		}
+		if err := moveUIDs(c, uidSet(uids), target.RemoteID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// moveUIDs moves messages of the selected folder: MOVE, else COPY, \Deleted and UID EXPUNGE
+// of exactly those messages (UIDPLUS). A server with neither expunges a whole folder at
+// once, so there the originals are expunged only when no other message of the folder is
+// marked \Deleted (one another client marked stays as it was); otherwise they stay marked
+// \Deleted for the server or that client to expunge.
+func moveUIDs(c *imapclient.Client, set imap.UIDSet, dest string) error {
+	caps := c.Caps()
+	if caps.Has(imap.CapMove) || caps.Has(imap.CapUIDPlus) {
+		if _, err := c.Move(set, dest).Wait(); err != nil {
 			return opError("moving messages", err)
 		}
+		return nil
+	}
+	if _, err := c.Copy(set, dest).Wait(); err != nil {
+		return opError("moving messages", err)
+	}
+	if err := c.Store(set, &imap.StoreFlags{Op: imap.StoreFlagsAdd, Silent: true, Flags: []imap.Flag{imap.FlagDeleted}}, nil).Close(); err != nil {
+		return opError("moving messages", err)
+	}
+	data, err := c.UIDSearch(&imap.SearchCriteria{Flag: []imap.Flag{imap.FlagDeleted}, Not: []imap.SearchCriteria{{UID: []imap.UIDSet{set}}}}, nil).Wait()
+	if err != nil {
+		return opError("moving messages", err)
+	}
+	if len(data.AllUIDs()) > 0 {
+		return nil
+	}
+	if err := c.Expunge().Close(); err != nil {
+		return opError("moving messages", err)
 	}
 	return nil
 }
@@ -608,24 +668,32 @@ func (p *imapProvider) Send(ctx context.Context, raw []byte, info SendInfo) (Sen
 }
 
 // syncIMAP runs one pass over the account's folders (at most maxIMAPFolders, the
-// special ones first; the virtual All, Flagged and Important folders are not read).
+// special ones first; the virtual All, Flagged and Important folders are not read for new
+// mail). All Mail (Gmail), and folders past the first maxIMAPFolders, are read for presence
+// only: the messages already located there keep or lose those locations. The pass ends by
+// asking where its orphans went (relocateIMAP) and sweeping them (sweepOrphans).
 func (s *service) syncIMAP(ctx context.Context, p *pass, ip *imapProvider) error {
 	c, err := ip.session(ctx)
 	if err != nil {
 		return err
 	}
-	folders := []*folderRow{}
+	folders, presence := []*folderRow{}, []*folderRow{}
 	for _, f := range p.folders {
-		if f.Role != nil && (*f.Role == RoleAll || *f.Role == RoleStarred || *f.Role == RoleImportant) {
-			continue
+		switch {
+		case f.Role != nil && *f.Role == RoleAll:
+			presence = append(presence, f)
+		case f.Role != nil && (*f.Role == RoleStarred || *f.Role == RoleImportant):
+		default:
+			folders = append(folders, f)
 		}
-		folders = append(folders, f)
 	}
 	slices.SortFunc(folders, func(a, b *folderRow) int { return compareFolders(a.remote(), b.remote()) })
 	if len(folders) > maxIMAPFolders {
+		presence = append(presence, folders[maxIMAPFolders:]...)
 		folders = folders[:maxIMAPFolders]
 	}
-	// Mail in a folder deleted at the server went with it.
+	// Mail in a folder deleted at the server went with it (or to another folder: the
+	// orphans' relocation finds it there).
 	for _, gone := range p.removedFolders {
 		known, err := p.imapKnown(ctx, gone)
 		if err != nil {
@@ -664,7 +732,203 @@ func (s *service) syncIMAP(ctx context.Context, p *pass, ip *imapProvider) error
 		}
 		budget = max(budget-used, 0)
 	}
-	return p.batch(ctx, func(tx pgx.Tx) error { return p.removeOrphans(ctx, tx) })
+	for _, f := range presence {
+		if err := s.syncIMAPPresence(ctx, p, c, f); err != nil {
+			return err
+		}
+	}
+	if err := s.relocateIMAP(ctx, p, c, folders, presence); err != nil {
+		return err
+	}
+	return p.batch(ctx, func(tx pgx.Tx) error { return p.sweepOrphans(ctx, tx) })
+}
+
+// syncIMAPPresence keeps the locations of a folder read for presence only: those of a
+// folder that started over are dropped, and those of messages gone from it, with flags
+// read as for any folder without CONDSTORE. A folder no message is located in is not opened.
+func (s *service) syncIMAPPresence(ctx context.Context, p *pass, c *imapclient.Client, f *folderRow) error {
+	known, err := p.imapKnown(ctx, f.RemoteID)
+	if err != nil || len(known) == 0 {
+		return err
+	}
+	sel, err := c.Select(f.RemoteID, &imap.SelectOptions{ReadOnly: true}).Wait()
+	if err != nil {
+		if isNonExistent(err) {
+			return nil // gone since the folder list; the next pass drops it
+		}
+		return opError("opening a folder", err)
+	}
+	var st imapFolderState
+	_ = json.Unmarshal(f.SyncState, &st)
+	stale := []*storedMsg{}
+	for uid, m := range known {
+		for _, l := range parseLocation(m.Location) {
+			if l.Folder == f.RemoteID && l.UID == uid && l.Validity != sel.UIDValidity {
+				stale = append(stale, m)
+				delete(known, uid)
+				break
+			}
+		}
+	}
+	if len(stale) > 0 {
+		err := p.batch(ctx, func(tx pgx.Tx) error {
+			for _, m := range stale {
+				if err := p.setLocs(ctx, tx, m, dropFolder(parseLocation(m.Location), f.RemoteID)); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+	}
+	if len(known) > 0 {
+		refresh := known
+		if len(known) > imapRefreshNewest {
+			if time.Since(time.Unix(st.FullRefresh, 0)) < imapFullRefresh {
+				refresh = newestKnown(known, imapRefreshNewest)
+			} else {
+				st.FullRefresh = time.Now().Unix()
+			}
+		}
+		if err := s.imapRefresh(ctx, p, c, f, sel.UIDValidity, refresh, false, 0); err != nil {
+			return err
+		}
+	}
+	st.Validity = sel.UIDValidity
+	b, _ := json.Marshal(st)
+	_, err = s.d.DB.Pool.Exec(ctx, `UPDATE collab_folders SET sync_state = $2 WHERE id = $1`, f.ID, b)
+	return err
+}
+
+// relocateIMAP asks the server where the pass's orphans are, by Message-ID: in All Mail
+// first (Gmail keeps everything but Spam and Trash there), then in the folders the pass
+// read, then in those read for presence. A message found gains that location; one found
+// nowhere stays an orphan until the sweep. Each orphan is asked about when it is first
+// missed and again before it would be removed (relocatable).
+func (s *service) relocateIMAP(ctx context.Context, p *pass, c *imapclient.Client, synced, presence []*folderRow) error {
+	cands, err := p.relocatable(ctx, s.d.DB.Pool, relocateBatch)
+	if err != nil || len(cands) == 0 {
+		return err
+	}
+	pending := map[string]*storedMsg{}
+	for _, m := range cands {
+		if m.MessageID != "" {
+			pending[m.MessageID] = m
+		}
+	}
+	order := []*folderRow{}
+	for _, f := range presence {
+		if f.Role != nil && *f.Role == RoleAll {
+			order = append(order, f)
+		}
+	}
+	order = append(order, synced...)
+	for _, f := range presence {
+		if f.Role == nil || *f.Role != RoleAll {
+			order = append(order, f)
+		}
+	}
+	for _, f := range order {
+		if len(pending) == 0 {
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		found, validity, err := findByMessageID(c, f.RemoteID, slices.Collect(maps.Keys(pending)))
+		if err != nil {
+			return err
+		}
+		if len(found) == 0 {
+			continue
+		}
+		err = p.batch(ctx, func(tx pgx.Tx) error {
+			for id, hit := range found {
+				m := pending[id]
+				if m == nil {
+					continue
+				}
+				loc := imapLoc{Folder: f.RemoteID, Validity: validity, UID: hit.uid}
+				locs := append(dropUID(parseLocation(m.Location), loc), loc)
+				if err := p.update(ctx, tx, m, p.imapState(hit.flags, locs)); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		for id := range found {
+			delete(pending, id)
+		}
+	}
+	return nil
+}
+
+// imapHit is where a Message-ID was found in a folder.
+type imapHit struct {
+	uid   uint32
+	flags []imap.Flag
+}
+
+// findByMessageID selects a folder (read-only) and finds the messages with these bare
+// Message-IDs, a few searches at a time, checked against each message's envelope (a
+// header search matches substrings). It returns them by Message-ID with the folder's
+// UIDVALIDITY.
+func findByMessageID(c *imapclient.Client, folder string, msgIDs []string) (map[string]imapHit, uint32, error) {
+	sel, err := c.Select(folder, &imap.SelectOptions{ReadOnly: true}).Wait()
+	if err != nil {
+		if isNonExistent(err) {
+			return nil, 0, nil
+		}
+		return nil, 0, opError("opening a folder", err)
+	}
+	out := map[string]imapHit{}
+	if sel.NumMessages == 0 {
+		return out, sel.UIDValidity, nil
+	}
+	slices.Sort(msgIDs)
+	for len(msgIDs) > 0 {
+		n := min(len(msgIDs), 20)
+		chunk := msgIDs[:n]
+		msgIDs = msgIDs[n:]
+		data, err := c.UIDSearch(messageIDCriteria(chunk), nil).Wait()
+		if err != nil {
+			return nil, 0, opError("searching a folder", err)
+		}
+		uids := data.AllUIDs()
+		if len(uids) == 0 {
+			continue
+		}
+		var set imap.UIDSet
+		set.AddNum(uids...)
+		msgs, err := c.Fetch(set, &imap.FetchOptions{UID: true, Flags: true, Envelope: true}).Collect()
+		if err != nil {
+			return nil, 0, opError("reading messages", err)
+		}
+		for _, m := range msgs {
+			if m.Envelope == nil {
+				continue
+			}
+			id := bare(m.Envelope.MessageID)
+			if _, seen := out[id]; !seen && slices.Contains(chunk, id) {
+				out[id] = imapHit{uid: uint32(m.UID), flags: m.Flags}
+			}
+		}
+	}
+	return out, sel.UIDValidity, nil
+}
+
+// messageIDCriteria matches any of the Message-IDs.
+func messageIDCriteria(ids []string) *imap.SearchCriteria {
+	one := imap.SearchCriteria{Header: []imap.SearchCriteriaHeaderField{{Key: "Message-ID", Value: "<" + ids[0] + ">"}}}
+	if len(ids) == 1 {
+		return &one
+	}
+	return &imap.SearchCriteria{Or: [][2]imap.SearchCriteria{{one, *messageIDCriteria(ids[1:])}}}
 }
 
 // imapMeta is what a FETCH told us about one message of a folder.
@@ -703,16 +967,10 @@ func (s *service) syncIMAPFolder(ctx context.Context, p *pass, c *imapclient.Cli
 	}
 	initial := st.Validity == 0 || st.Validity != sel.UIDValidity
 	if initial {
-		// Every stored UID of this folder is meaningless now.
-		err := p.batch(ctx, func(tx pgx.Tx) error {
-			for _, m := range known {
-				if err := p.setLocs(ctx, tx, m, dropFolder(parseLocation(m.Location), f.RemoteID)); err != nil {
-					return err
-				}
-			}
-			return nil
-		})
-		if err != nil {
+		// Every stored UID of this folder is meaningless now: the messages it held are found
+		// again by Message-ID under the new UIDVALIDITY before the old locations go, so mail
+		// older than the first sync's window keeps its place.
+		if err := s.relocateFolder(ctx, p, c, f, sel.UIDValidity, known); err != nil {
 			return 0, err
 		}
 		known = map[uint32]*storedMsg{}
@@ -777,8 +1035,15 @@ func (s *service) syncIMAPFolder(ctx context.Context, p *pass, c *imapclient.Cli
 	}
 
 	// Flags of known messages, and the ones gone from the folder. Without CONDSTORE a large
-	// folder has its newest messages read every pass and all of them now and then.
-	if !initial && len(known) > 0 && !(condstore && st.ModSeq != 0 && sel.HighestModSeq == st.ModSeq) {
+	// folder has its newest messages read every pass and all of them now and then. With
+	// CONDSTORE an unchanged HIGHESTMODSEQ skips the pass, except every imapFullRefresh:
+	// a server that does not move it on an expunge still has its deletions noticed.
+	unchanged := condstore && st.ModSeq != 0 && sel.HighestModSeq == st.ModSeq
+	if unchanged && time.Since(time.Unix(st.FullRefresh, 0)) >= imapFullRefresh {
+		unchanged = false
+		st.FullRefresh = time.Now().Unix()
+	}
+	if !initial && len(known) > 0 && !unchanged {
 		refresh := known
 		if !condstore && len(known) > imapRefreshNewest {
 			if time.Since(time.Unix(st.FullRefresh, 0)) < imapFullRefresh {
@@ -799,6 +1064,79 @@ func (s *service) syncIMAPFolder(ctx context.Context, p *pass, c *imapclient.Cli
 		return imported, err
 	}
 	return imported, nil
+}
+
+// relocateFolder moves the folder's known messages to the UIDs their Message-IDs have
+// under a new UIDVALIDITY, reading every message's envelope a chunk at a time; a message
+// not found there loses its location in the folder (and may become an orphan). Each chunk
+// is stored in its own transaction: an interrupted run is simply run again.
+func (s *service) relocateFolder(ctx context.Context, p *pass, c *imapclient.Client, f *folderRow, validity uint32, known map[uint32]*storedMsg) error {
+	if len(known) == 0 {
+		return nil
+	}
+	found := map[string]imapHit{}
+	data, err := c.UIDSearch(&imap.SearchCriteria{}, nil).Wait()
+	if err != nil {
+		return opError("searching a folder", err)
+	}
+	all := data.AllUIDs()
+	for len(all) > 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		n := min(len(all), 1000)
+		var set imap.UIDSet
+		set.AddNum(all[:n]...)
+		all = all[n:]
+		msgs, err := c.Fetch(set, &imap.FetchOptions{UID: true, Flags: true, Envelope: true}).Collect()
+		if err != nil {
+			return opError("reading messages", err)
+		}
+		for _, m := range msgs {
+			if m.Envelope == nil {
+				continue
+			}
+			if id := bare(m.Envelope.MessageID); id != "" {
+				if _, seen := found[id]; !seen {
+					found[id] = imapHit{uid: uint32(m.UID), flags: m.Flags}
+				}
+			}
+		}
+	}
+	list := make([]*storedMsg, 0, len(known))
+	seen := make(map[uuid.UUID]bool, len(known))
+	for _, m := range known {
+		if !seen[m.ID] {
+			seen[m.ID] = true
+			list = append(list, m)
+		}
+	}
+	for len(list) > 0 {
+		n := min(len(list), syncBatch*20)
+		chunk := list[:n]
+		list = list[n:]
+		err := p.batch(ctx, func(tx pgx.Tx) error {
+			for _, m := range chunk {
+				locs := dropFolder(parseLocation(m.Location), f.RemoteID)
+				hit, ok := found[m.MessageID]
+				if !ok || m.MessageID == "" {
+					if err := p.setLocs(ctx, tx, m, locs); err != nil {
+						return err
+					}
+					continue
+				}
+				locs = append(locs, imapLoc{Folder: f.RemoteID, Validity: validity, UID: hit.uid})
+				if err := p.update(ctx, tx, m, p.imapState(hit.flags, locs)); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // imapImport stores a chunk of new UIDs of the folder: a message already stored (the
@@ -993,28 +1331,38 @@ func (p *pass) imapKnown(ctx context.Context, folder string) (map[uint32]*stored
 
 // imapState is a message's state from one copy's flags and all its locations.
 func (p *pass) imapState(flags []imap.Flag, locs []imapLoc) state {
-	remote := []string{}
-	for _, l := range locs {
-		remote = append(remote, l.Folder)
-	}
 	return state{
 		Unread:    !hasFlag(flags, imap.FlagSeen),
 		Starred:   hasFlag(flags, imap.FlagFlagged),
 		Draft:     hasFlag(flags, imap.FlagDraft),
-		FolderIDs: p.folderIDs(remote),
+		FolderIDs: p.imapFolderIDs(locs),
 		Location:  encodeLocation(locs),
 	}
 }
 
-// setLocs replaces a message's locations (and so its folders), keeping its flags.
-func (p *pass) setLocs(ctx context.Context, tx pgx.Tx, m *storedMsg, locs []imapLoc) error {
+// imapFolderIDs is the folders of a message's locations. All Mail is where mail lives, not
+// a folder it is filed in: mail only there is archived, the same as Gmail's own.
+func (p *pass) imapFolderIDs(locs []imapLoc) []uuid.UUID {
 	remote := []string{}
 	for _, l := range locs {
+		if f, ok := p.folders[l.Folder]; ok && f.Role != nil && *f.Role == RoleAll {
+			continue
+		}
 		remote = append(remote, l.Folder)
 	}
-	return p.update(ctx, tx, m, state{Unread: m.Unread, Starred: m.Starred, Draft: m.Draft, FolderIDs: p.folderIDs(remote),
+	return p.folderIDs(remote)
+}
+
+// setLocs replaces a message's locations (and so its folders), keeping its flags.
+func (p *pass) setLocs(ctx context.Context, tx pgx.Tx, m *storedMsg, locs []imapLoc) error {
+	return p.update(ctx, tx, m, state{Unread: m.Unread, Starred: m.Starred, Draft: m.Draft, FolderIDs: p.imapFolderIDs(locs),
 		Location: encodeLocation(locs)})
 }
+
+// localLocation marks mail sent from opendesk that the IMAP server keeps no copy of (no
+// Sent folder, or the copy could not be appended): it is never an orphan (orphanSQL). The
+// copy synced from Sent later replaces it.
+var localLocation = json.RawMessage(`{"imap": [], "local": true}`)
 
 func dropFolder(locs []imapLoc, folder string) []imapLoc {
 	return slices.DeleteFunc(slices.Clone(locs), func(l imapLoc) bool { return l.Folder == folder })

@@ -3340,6 +3340,8 @@ export type MailThread = {
   category?: string | null;
   /** The AI draft waiting for a person (Ready for review); null otherwise. */
   ai_draft?: MailThreadAIDraft | null;
+  /** Its account is private: only the account's owner acts on it, replies from it or brings people into it; others who see it read and comment. */
+  private_account?: boolean;
 };
 
 export type MailThreadAIDraft = {
@@ -3364,6 +3366,8 @@ export type MailAttachment = {
   content_id: string;
   /** Signed, valid for an hour, works in <img> and as a download link. */
   url: string;
+  /** A program or script: listed, never downloaded from opendesk. */
+  blocked?: boolean;
 };
 
 export type MailMessage = {
@@ -3459,6 +3463,8 @@ export type MailComment = {
 
 export type MailThreadAccount = {
   id: string;
+  /** Who connected it; for a private account the one person who uses its mailbox. */
+  owner_id?: string | null;
   email: string;
   name: string;
   display_name: string;
@@ -3481,7 +3487,10 @@ export type MailThreadDetail = {
   comments: MailComment[];
   /** The conversation's own shares. */
   shares: MailAudience;
+  /** You may comment (agent or above). */
   can_act: boolean;
+  /** You may act on it at the provider, reply or forward from the account, save drafts, share it, assign it and mention people who do not see it yet: a private account's owner, or anyone who can act on a shared account's. Older servers leave it out (can_act then). */
+  can_use_mailbox?: boolean;
   /** The ticket it answered or was answered from, when you see it (contracts/collab.md "Answering tickets"). */
   ticket?: { id: string; number: number; subject: string } | null;
   /** AI drafts discarded, replaced or abandoned and gone, oldest first (contracts/collab.md "AI draft outcomes"). */
