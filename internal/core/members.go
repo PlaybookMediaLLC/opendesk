@@ -162,7 +162,9 @@ func (s *svc) registerMembers(api huma.API) {
 			}
 			next := auth.Role(in.Body.Role)
 			var m CoreMember
+			changed := false
 			err = s.tx(ctx, func(tx pgx.Tx) error {
+				changed = false
 				var cur string
 				if err := tx.QueryRow(ctx, `SELECT role FROM members WHERE workspace_id = $1 AND user_id = $2 FOR UPDATE`, p.WorkspaceID, uid).Scan(&cur); err != nil {
 					if db.IsNotFound(err) {
@@ -180,6 +182,7 @@ func (s *svc) registerMembers(api huma.API) {
 				if _, err := tx.Exec(ctx, `UPDATE members SET role = $3 WHERE workspace_id = $1 AND user_id = $2`, p.WorkspaceID, uid, next); err != nil {
 					return err
 				}
+				changed = true
 				if next == auth.RoleViewer {
 					if err := observeTeams(ctx, tx, p, uid); err != nil {
 						return err
@@ -199,6 +202,11 @@ func (s *svc) registerMembers(api huma.API) {
 			})
 			if err != nil {
 				return nil, httpx.Wrap(err)
+			}
+			// The member's sockets carry the old role: they reconnect with a token that has
+			// the new one, and tokens issued before now no longer open a socket.
+			if changed {
+				s.disconnect(uid, uuid.Nil)
 			}
 			return &struct{ Body CoreMember }{m}, nil
 		})

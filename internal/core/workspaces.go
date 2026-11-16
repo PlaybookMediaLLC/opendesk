@@ -823,6 +823,8 @@ func (s *svc) registerWorkspaces(api huma.API) {
 			if err != nil {
 				return nil, httpx.Wrap(err)
 			}
+			// Both roles changed: both people's sockets reconnect with their new role.
+			s.disconnectAll([]uuid.UUID{p.UserID, in.Body.UserID})
 			return &struct{ Body CoreMember }{m}, nil
 		})
 
