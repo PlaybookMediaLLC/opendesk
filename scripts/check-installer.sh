@@ -215,6 +215,8 @@ openssl ec -in deploy/install/release-signing.pub -pubin -noout 2>/dev/null || f
 for f in "$SCRIPT" deploy/self-host/opendesk-ctl; do
   grep -q "$(sed -n 2p deploy/install/release-signing.pub)" "$f" || fail "$f does not embed deploy/install/release-signing.pub"
 done
+fingerprint=$(openssl pkey -pubin -in deploy/install/release-signing.pub -outform DER | sha256sum | cut -d' ' -f1)
+grep -q "^# $fingerprint\$" deploy/README.md || fail "deploy/README.md does not publish the fingerprint of deploy/install/release-signing.pub ($fingerprint)"
 pass "installs a release after v0.2.0 only with a signature that holds"
 
 echo "# tampered" >>"$work/assets/docker-compose.yml"

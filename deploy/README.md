@@ -551,6 +551,44 @@ branches to be up to date" (the migration duplicate check depends on it). A tag
 ruleset on `v*` (Settings > Rules) restricts creating, moving and deleting
 release tags to maintainers, since a release tag deploys production.
 
+#### Release signing
+
+A signed release is what every self-host with auto-update installs, so the
+keys that sign live in a GitHub environment named `release`, never as
+repository secrets:
+
+1. Settings > Environments > New environment `release`. Add **required
+   reviewers** (maintainers other than the one who tags, where possible),
+   tick "Prevent self-review", and under "Deployment branches and tags"
+   allow only tags `v*` and `desktop-v*`.
+2. Move these secrets from the repository into that environment, then delete
+   the repository copies: `RELEASE_SIGNING_KEY` (release.yml signs
+   `SHA256SUMS`), `CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_ID`,
+   `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`, `APPLE_API_KEY`,
+   `APPLE_API_KEY_ID`, `APPLE_API_ISSUER` (macOS signing, notarization and the
+   iPhone upload), `WIN_CSC_LINK`, `WIN_CSC_KEY_PASSWORD` and the `AZURE_*`
+   Trusted Signing secrets (Windows). Move the variable `IOS_TEAM_ID` too.
+
+Release, Desktop and iOS refuse a tag whose commit is not on `main`, and the
+jobs that sign wait in the `release` environment until a reviewer approves
+them. A desktop or iPhone build without a release tag gets no environment and
+is unsigned.
+
+The release key's fingerprint is published with every release (its notes) and
+here, so an installer fetched from opendesk.sh can be checked against a second
+source:
+
+```sh
+openssl pkey -pubin -in deploy/install/release-signing.pub -outform DER | sha256sum
+# 10cbd016889b434cb9b98842872c11280e4e7d381543ba83ac7ffee12a2f7e8a
+```
+
+`scripts/check-installer.sh` checks that this value, the key embedded in
+`install.sh` and `opendesk-ctl`, and `release-signing.pub` agree.
+
+The `CLOUDFLARE_API_TOKEN` in `production` can publish opendesk.sh, which
+serves `install.sh`: keep it to the scopes in step 2 and nothing more.
+
 ### 12. First deploy
 
 Run the Deploy workflow from a release tag (Actions > Deploy > Run workflow,
@@ -622,8 +660,10 @@ command with `admin revoke <email>` removes one, and `admin list` lists them.
   email worker, help worker (with its routes).
   Migrations run before any service moves, so a migration must work with both
   the old and the new code (add, backfill, then remove in a later deploy).
-- **release.yml** (tags `v*`): GHCR images with SBOM and provenance,
-  attestations, the GitHub release, and the site refresh.
+- **release.yml** (tags `v*` on a commit on `main`): GHCR images with SBOM
+  and provenance, attestations, and the GitHub release, whose `SHA256SUMS` is
+  signed in the `release` environment after a reviewer approves
+  ([Release signing](#release-signing)).
 - **security.yml** (weekly): govulncheck, pnpm audit, mix deps.audit and
   sobelow, Trivy on the published images.
 

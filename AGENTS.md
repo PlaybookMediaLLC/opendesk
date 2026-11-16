@@ -209,6 +209,10 @@ Errors, logging, data
 - Releases sign `SHA256SUMS` with the release key (`deploy/install/release-signing.pub`,
   secret `RELEASE_SIGNING_KEY`); the installer and `opendesk-ctl` verify it and pin image
   digests. Desktop apps install updates themselves only where the code signature is checked.
+- Only a tag on a commit on `main` is released, signed or deployed. The release key and the
+  Apple and Windows code-signing secrets are secrets of the `release` GitHub environment
+  (required reviewers, release tags only), never repository secrets; every job that signs
+  names that environment (`deploy/README.md`, "Release signing").
 
 ## Web conventions (`web/`, `site/`, `docs/`)
 

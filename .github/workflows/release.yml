@@ -57,6 +57,15 @@ jobs:
           ref: refs/tags/${{ steps.v.outputs.version }}
       - id: source
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      # A release ships only code that reached main (through the merge queue),
+      # as deploy.yml requires: the signed release is what self-hosts install.
+      - name: Tag is on main
+        env:
+          SHA: ${{ steps.source.outputs.sha }}
+          TAG: ${{ steps.v.outputs.version }}
+        run: |
+          git merge-base --is-ancestor "$SHA" origin/main ||
+            { echo "::error::$TAG is not on main; only commits on main are released"; exit 1; }
       - name: Release is unpublished
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -282,10 +291,14 @@ jobs:
           sarif_file: trivy.sarif
           category: release-${{ matrix.image }}
 
+  # RELEASE_SIGNING_KEY is a secret of the `release` environment (required
+  # reviewers, v* tags only), never a repository secret: a release is signed
+  # only after a reviewer approves this job (deploy/README.md "Release signing").
   github-release:
     name: GitHub release
     needs: [validate, opendesk, realtime, desktop]
     runs-on: ubuntu-latest
+    environment: release
     permissions:
       contents: write
     steps:
@@ -339,6 +352,7 @@ jobs:
         run: |
           flags="--verify-tag --generate-notes --title $TAG"
           [ "$PRERELEASE" = true ] && flags="$flags --prerelease"
+          fingerprint=$(openssl pkey -pubin -in deploy/install/release-signing.pub -outform DER | sha256sum | cut -d' ' -f1)
           cat > notes.md <<EOF
           ## Install
 
@@ -349,6 +363,8 @@ jobs:
           Upgrade an existing install: \`/opt/opendesk/opendesk-ctl upgrade $TAG\`
 
           Images: \`ghcr.io/useopendesk/opendesk:$TAG\`, \`ghcr.io/useopendesk/realtime:$TAG\` (digests in images.json).
+
+          \`SHA256SUMS.sig\` is signed by the release key, SHA-256 fingerprint (DER public key) \`$fingerprint\`.
 
           Desktop installers for this version are attached below. Installed desktop apps update automatically; downloads are also at https://opendesk.sh/download.
           EOF
