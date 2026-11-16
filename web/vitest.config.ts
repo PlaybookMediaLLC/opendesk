@@ -8,5 +8,6 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     include: ["src/**/*.test.ts", "src/**/*.test.tsx", "widget/**/*.test.ts"],
+    setupFiles: ["src/lib/test/i18nSetup.ts"],
   },
 });

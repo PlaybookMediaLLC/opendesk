@@ -5,7 +5,7 @@
 import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
 import { NodeViewContent, NodeViewWrapper, ReactNodeViewRenderer, type NodeViewProps } from "@tiptap/react";
 import { Check, ChevronDown, Code2, Copy, Workflow } from "lucide-react";
-import { common, createLowlight } from "lowlight";
+import { createLowlight } from "lowlight";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Tooltip } from "@/components/ui/tooltip";
@@ -16,7 +16,34 @@ import { SearchInput } from "@/components/ui/input";
 import { copyText } from "@/components/ui/copy-button";
 import { cn } from "@/lib/cn";
 
-export const lowlight = createLowlight(common);
+export const lowlight = createLowlight();
+
+let grammarsIn = false;
+/** The common grammars: their own chunk, asked for as soon as the editor's code is. */
+export const grammars: Promise<void> = import("./grammars").then(
+  ({ common }) => {
+    lowlight.register(common);
+    grammarsIn = true;
+  },
+  () => {
+    // Without them code blocks show plain text; the editor still opens.
+    grammarsIn = true;
+  },
+);
+
+/** Whether the grammars are in: an editor made before them would show its code blocks plain until edited. */
+export function useGrammars(): boolean {
+  const [ready, setReady] = useState(grammarsIn);
+  useEffect(() => {
+    if (ready) return;
+    let live = true;
+    void grammars.then(() => live && setReady(true));
+    return () => {
+      live = false;
+    };
+  }, [ready]);
+  return ready;
+}
 
 /** The languages offered, by the names people know them by. */
 const NAMES: Record<string, string> = {
@@ -56,7 +83,8 @@ const NAMES: Record<string, string> = {
   xml: "HTML / XML",
   yaml: "YAML",
 };
-export const LANGUAGES = Object.keys(NAMES).filter((k) => k === "plaintext" || k === "mermaid" || lowlight.registered(k));
+/** Every name above is one of lowlight's common grammars (or plain text, or Mermaid). */
+export const LANGUAGES = Object.keys(NAMES);
 
 function CodeView({ node, updateAttributes, editor, getPos }: NodeViewProps) {
   const { t } = useTranslation("wiki");

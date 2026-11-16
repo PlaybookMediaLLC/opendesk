@@ -14,6 +14,7 @@ import { toast } from "@/components/ui/toast";
 import type { RichEditorHandle } from "@/components/editor/RichEditor";
 import type { Member, WikiNode } from "@/lib/api/types";
 import { cn } from "@/lib/cn";
+import { useGrammars } from "./code";
 import { q, qk } from "@/lib/queries";
 import { api } from "@/lib/api/endpoints";
 import { useAI } from "@/lib/ai";
@@ -53,7 +54,14 @@ export type WikiEditorProps = {
   pageTitle?: string;
 };
 
+/** The page's editor, once the code grammars are in (they load beside the page itself). */
 export const WikiEditor = forwardRef<RichEditorHandle, WikiEditorProps>(function WikiEditor(props, ref) {
+  const ready = useGrammars();
+  if (!ready) return <div className={cn("min-h-[40vh]", props.className)} aria-busy="true" />;
+  return <ReadyEditor {...props} ref={ref} />;
+});
+
+const ReadyEditor = forwardRef<RichEditorHandle, WikiEditorProps>(function ReadyEditor(props, ref) {
   const { t } = useTranslation("wiki");
   const { tree } = useWikiTree();
   const members = useQuery(q.members());
