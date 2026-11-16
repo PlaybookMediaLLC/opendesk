@@ -15,9 +15,10 @@ import (
 
 type canvasPage struct {
 	spaced
-	Kind   string       `json:"kind"`
-	Canvas *wiki.Canvas `json:"canvas"`
-	Tags   []string     `json:"tags"`
+	Kind          string       `json:"kind"`
+	Canvas        *wiki.Canvas `json:"canvas"`
+	CanvasVersion int          `json:"canvas_version"`
+	Tags          []string     `json:"tags"`
 }
 
 func card(id, typ string, extra map[string]any) map[string]any {
@@ -210,6 +211,62 @@ func TestCanvas(t *testing.T) {
 	r = e.Do("GET", "/v1/wiki/pages/"+cv.ID+"/export?format=html", viewer, nil).Want(t, 200)
 	if s := string(r.Body); !strings.Contains(s, `<div class="canvas"`) || !strings.Contains(s, "Ship the #launch on Friday") || !strings.Contains(s, "<line ") {
 		t.Fatalf("html canvas: %s", s)
+	}
+}
+
+// A canvas save names the canvas_version it started from: a canvas changed since is
+// 409 canvas_changed and stays as it is; the same cards again never conflict; a save
+// without the version replaces the canvas as it is.
+func TestCanvasVersion(t *testing.T) {
+	e := hdtest.New(t, wiki.Register)
+	ws := e.NewWorkspace()
+	agent, admin := ws.Agent.As(ws), ws.Admin.As(ws)
+
+	var cv canvasPage
+	e.Do("POST", "/v1/wiki/pages", agent, map[string]any{"title": "Board", "kind": "canvas"}).Want(t, 201).JSON(t, &cv)
+	if cv.CanvasVersion != 1 {
+		t.Fatalf("new canvas at canvas_version %d", cv.CanvasVersion)
+	}
+	one := map[string]any{"nodes": []any{card("a", "text", map[string]any{"html": "<p>A's card</p>"})}}
+	two := map[string]any{"nodes": []any{card("b", "text", map[string]any{"html": "<p>B's card</p>"})}}
+
+	// A saves from version 1: the canvas moves to 2, and the event says so.
+	_, seq := e.Events(ws.ID, 0)
+	var saved canvasPage
+	e.Do("PATCH", "/v1/wiki/pages/"+cv.ID, agent, map[string]any{"canvas": one, "canvas_version": 1}).Want(t, 200).JSON(t, &saved)
+	if saved.CanvasVersion != 2 || saved.Version != cv.Version || len(saved.Canvas.Nodes) != 1 {
+		t.Fatalf("saved canvas_version %d version %d %+v", saved.CanvasVersion, saved.Version, saved.Canvas)
+	}
+	var data string
+	e.Scalar(`SELECT data::text FROM events WHERE workspace_id = $1 AND seq > $2 AND type = 'wiki_page.updated' ORDER BY seq LIMIT 1`, &data, ws.ID, seq)
+	var ev struct {
+		CanvasVersion int `json:"canvas_version"`
+	}
+	if err := json.Unmarshal([]byte(data), &ev); err != nil || ev.CanvasVersion != 2 {
+		t.Fatalf("event %s", data)
+	}
+
+	// B still holds version 1: refused, and A's card stays.
+	r := e.Do("PATCH", "/v1/wiki/pages/"+cv.ID, admin, map[string]any{"canvas": two, "canvas_version": 1})
+	if r.Status != 409 || !strings.Contains(string(r.Body), "canvas_changed") {
+		t.Fatalf("stale save: %d %s", r.Status, r.Body)
+	}
+	var now canvasPage
+	e.Do("GET", "/v1/wiki/pages/"+cv.ID, admin, nil).Want(t, 200).JSON(t, &now)
+	if now.CanvasVersion != 2 || len(now.Canvas.Nodes) != 1 || now.Canvas.Nodes[0].ID != "a" {
+		t.Fatalf("after a stale save: v%d %+v", now.CanvasVersion, now.Canvas)
+	}
+	// A stale version that sends the canvas as it is changes nothing and is no conflict.
+	e.Do("PATCH", "/v1/wiki/pages/"+cv.ID, admin, map[string]any{"canvas": one, "canvas_version": 1}).Want(t, 200)
+	// B saves again from the canvas it now holds.
+	e.Do("PATCH", "/v1/wiki/pages/"+cv.ID, admin, map[string]any{"canvas": two, "canvas_version": 2}).Want(t, 200).JSON(t, &now)
+	if now.CanvasVersion != 3 || now.Canvas.Nodes[0].ID != "b" {
+		t.Fatalf("fresh save: v%d %+v", now.CanvasVersion, now.Canvas)
+	}
+	// Without canvas_version the canvas is replaced as it is.
+	e.Do("PATCH", "/v1/wiki/pages/"+cv.ID, agent, map[string]any{"canvas": one}).Want(t, 200).JSON(t, &now)
+	if now.CanvasVersion != 4 || now.Canvas.Nodes[0].ID != "a" {
+		t.Fatalf("versionless save: v%d %+v", now.CanvasVersion, now.Canvas)
 	}
 }
 

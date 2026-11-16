@@ -1187,6 +1187,12 @@
     "readOnly": "View only",
     "saveFailed": "Couldn't save the canvas",
     "saveStopped": "This canvas can't be saved anymore. It was deleted or you can no longer edit it.",
+    "conflict": {
+      "title": "Someone else changed this canvas.",
+      "titleBy": "{{name}} changed this canvas.",
+      "body_one": "Their changes and yours are both here, except one card you both changed, which shows yours. Keep yours, or load their version.",
+      "body_other": "Their changes and yours are both here, except {{count}} cards you both changed, which show yours. Keep yours, or load their version."
+    },
     "uploadFailed": "Couldn't upload the file",
     "full": "A canvas holds up to 2,000 cards.",
     "format": {

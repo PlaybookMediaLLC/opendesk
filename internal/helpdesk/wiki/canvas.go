@@ -93,6 +93,10 @@ func canvasInvalid(format string, a ...any) error {
 	return httpx.E(422, "invalid_canvas", fmt.Sprintf(format, a...))
 }
 
+func staleCanvas() error {
+	return httpx.E(409, "canvas_changed", "Someone else changed this canvas since you opened it. Reload it to see their changes.")
+}
+
 func inRange(v, lo, hi float64) bool { return v >= lo && v <= hi }
 
 // cleanCanvas checks a canvas and normalizes it: text sanitized, fields that don't belong
@@ -316,15 +320,20 @@ func canvasEventData(data map[string]any, c *Canvas) {
 }
 
 // applyCanvas replaces a canvas's cards and connections; it reports whether anything
-// changed. Like a database's schema it keeps the version and adds no revision; it does
-// move the page's last edit, and its links and tags follow it.
-func applyCanvas(ctx context.Context, tx pgx.Tx, v Viewer, p *auth.Principal, id uuid.UUID, raw json.RawMessage) (bool, error) {
+// changed. It keeps the page's version and adds no revision; the canvas has its own
+// canvas_version, +1 on every change. A save naming the canvas_version it started from
+// (base) changes the canvas only while that is still the stored one; a save that leaves
+// the canvas as it is never conflicts. It does move the page's last edit, and its links
+// and tags follow it. The caller holds the page's row lock.
+func applyCanvas(ctx context.Context, tx pgx.Tx, v Viewer, p *auth.Principal, id uuid.UUID, raw json.RawMessage, base *int) (bool, error) {
 	if len(raw) == 0 {
 		return false, nil
 	}
 	var kind, body string
 	var stored []byte
-	if err := tx.QueryRow(ctx, `SELECT kind, canvas, body_html FROM wiki_pages WHERE workspace_id = $1 AND id = $2`, p.WorkspaceID, id).Scan(&kind, &stored, &body); err != nil {
+	var version int
+	if err := tx.QueryRow(ctx, `SELECT kind, canvas, body_html, canvas_version FROM wiki_pages WHERE workspace_id = $1 AND id = $2`,
+		p.WorkspaceID, id).Scan(&kind, &stored, &body, &version); err != nil {
 		return false, err
 	}
 	if kind != "canvas" {
@@ -346,7 +355,10 @@ func applyCanvas(ctx context.Context, tx pgx.Tx, v Viewer, p *auth.Principal, id
 	if bytes.Equal(before, after) {
 		return false, nil
 	}
-	if _, err := tx.Exec(ctx, `UPDATE wiki_pages SET canvas = $3, updated_by = $4, updated_at = now() WHERE workspace_id = $1 AND id = $2`,
+	if base != nil && *base != version {
+		return false, staleCanvas()
+	}
+	if _, err := tx.Exec(ctx, `UPDATE wiki_pages SET canvas = $3, canvas_version = canvas_version + 1, updated_by = $4, updated_at = now() WHERE workspace_id = $1 AND id = $2`,
 		p.WorkspaceID, id, after, p.ActorUserID()); err != nil {
 		return false, err
 	}

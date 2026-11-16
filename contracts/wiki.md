@@ -37,6 +37,7 @@ interface WikiPage extends WikiNode, PageSettings {
   created_at: string
   breadcrumbs: WikiRef[]       // its ancestors, the top-level page first
   children: WikiRef[]          // its subpages, in order
+  canvas_version: number       // a canvas's own version, see "Canvas" (1 on a page that is not a canvas)
 }
 
 interface PageSettings {       // see "Page settings"
@@ -165,11 +166,19 @@ A page can be a **canvas** (`kind: "canvas"`, migration `000726`): cards on an e
 connections between them, the shape of [JSON Canvas 1.0](https://jsoncanvas.org) with the wiki's own
 card types. It keeps `canvas`; its `body_html` is its description (empty from the app) and its subpages
 are pages as anywhere else. Create one with `POST /v1/wiki/pages` `{kind: "canvas", canvas?}` (left out:
-an empty canvas). `PATCH` takes `canvas` (a canvas only), replaced whole: like a database's schema it
-keeps the version and adds no revision, and the last save wins; it does move the page's last edit, and
-`wiki_page.updated` carries `canvas` (or `canvas_changed: true` when the canvas is over 256 KB: read the
-page). The app takes it when it has nothing unsaved and no drag under way. Wrong shapes are
-`422 invalid_canvas`. Duplicate, templates, the trash and restore carry it like the rest of the page; a
+an empty canvas). `PATCH` takes `canvas` (a canvas only), replaced whole: it keeps the page's version
+and adds no revision. A canvas has its own `canvas_version` (migration `000780`; starts at 1, +1 on every
+save that changes its cards or connections). A PATCH with `canvas` sends the `canvas_version` it edited
+from; when someone else changed the canvas since, the API answers `409 canvas_changed` and changes
+nothing. A save whose canvas is the stored one changes nothing and never conflicts. A PATCH without
+`canvas_version` (an API caller that does not care) replaces the canvas as it is. A save does move the
+page's last edit, and `wiki_page.updated` carries `canvas_version` with `canvas` (or `canvas_changed: true`
+when the canvas is over 256 KB: read the page). The app takes someone else's canvas when it has nothing
+unsaved and no drag under way. When it has unsaved changes and its save is refused, it merges: it starts
+from their canvas and puts back the cards and connections this tab added, changed or removed since its
+last save, then saves that with their `canvas_version`. A card this tab changed that they removed, or
+that both changed, asks "keep mine" (save the merge) or "load theirs" (drop this tab's changes), as a
+page's conflict does. Wrong shapes are `422 invalid_canvas`. Duplicate, templates, the trash and restore carry it like the rest of the page; a
 copy's page cards that show pages copied with it show the copies.
 
 ```ts
@@ -681,8 +690,9 @@ is `422`. Every emoji the app's picker offers passes (`TestPickerEmoji`).
 `wiki_page.updated` also carries `settings: PageSettings` when the page's look changed (it has no
 version to compare, so a client takes it as it comes).
 `wiki_page.updated` carries `aliases` when they changed (see "Aliases").
-`wiki_page.updated` carries `canvas` when a canvas's cards changed, or `canvas_changed: true` when the
-canvas is too large to carry (over 256 KB; read the page) (see "Canvas").
+`wiki_page.updated` carries `canvas` and `canvas_version` when a canvas's cards changed, or
+`canvas_changed: true` with `canvas_version` when the canvas is too large to carry (over 256 KB; read the
+page) (see "Canvas").
 `wiki_page.deleted`: `{ wiki_page_id, wiki_page_ids }` (the page and every subpage removed with it).
 `wiki_comment.changed`: `{ page_id, thread_id }`: a thread of the page changed (a comment added,
 edited or deleted, a reaction, resolved or reopened); refetch the page's comments.

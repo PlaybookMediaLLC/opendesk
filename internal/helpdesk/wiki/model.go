@@ -126,6 +126,9 @@ type WikiPage struct {
 	Breadcrumbs  []WikiRef       `json:"breadcrumbs" doc:"Its ancestors, the top-level page first"`
 	Children     []WikiRef       `json:"children" doc:"Its subpages, in order"`
 
+	// CanvasVersion is a canvas's own version (contracts/wiki.md "Canvas").
+	CanvasVersion int `json:"canvas_version" doc:"A canvas's own version, +1 on every change of its cards or connections"`
+
 	// owner is the private page's member, for scoping its events.
 	owner *uuid.UUID
 }
@@ -168,7 +171,7 @@ func collectNodes(rows pgx.Rows, err error) ([]WikiNode, error) {
 const pageSelect = `SELECT p.id, p.parent_id, p.title, p.icon, p.body_html, p.position, p.version, p.created_at, p.updated_at,
 	p.cover, p.cover_y, p.full_width, p.small_text, p.font, p.locked, p.tags,
 	p.private_to, p.team_id, p.template, p.journal, to_char(p.daily_date, 'YYYY-MM-DD'), p.deleted_at, p.trashed_with,
-	p.verified_at, p.verified_until, p.kind, p.database, p.props, p.canvas, p.aliases, p.area,
+	p.verified_at, p.verified_until, p.kind, p.database, p.props, p.canvas, p.aliases, p.area, p.canvas_version,
 	c.id, c.name, c.email, c.avatar_url, u.id, u.name, u.email, u.avatar_url,
 	v.id, v.name, v.email, v.avatar_url, x.id, x.name, x.email, x.avatar_url
 FROM wiki_pages p LEFT JOIN users c ON c.id = p.created_by LEFT JOIN users u ON u.id = p.updated_by
@@ -206,7 +209,7 @@ func loadPage(ctx context.Context, q db.Querier, wid, id uuid.UUID) (WikiPage, e
 		&p.ID, &p.ParentID, &p.Title, &p.Icon, &p.BodyHTML, &p.Position, &p.Version, &p.CreatedAt, &p.UpdatedAt,
 		&p.Cover, &p.CoverY, &p.FullWidth, &p.SmallText, &p.Font, &p.Locked, &p.Tags,
 		&p.owner, &p.TeamID, &p.Template, &p.Journal, &p.DailyDate, &p.DeletedAt, &trashedWith,
-		&verifiedAt, &verifiedUntil, &p.Kind, &database, &p.Props, &canvas, &p.Aliases, &p.Area,
+		&verifiedAt, &verifiedUntil, &p.Kind, &database, &p.Props, &canvas, &p.Aliases, &p.Area, &p.CanvasVersion,
 		&c.id, &c.name, &c.email, &c.avatar, &u.id, &u.name, &u.email, &u.avatar,
 		&v.id, &v.name, &v.email, &v.avatar, &x.id, &x.name, &x.email, &x.avatar)
 	if err != nil {
