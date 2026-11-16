@@ -260,3 +260,25 @@ func TestCompanies(t *testing.T) {
 		t.Fatalf("events %v", types)
 	}
 }
+
+// A member who sets a contact's email, even to the address it has, confirms it; a change of
+// anything else leaves an unconfirmed address as it is.
+func TestContactEmailConfirmedByMember(t *testing.T) {
+	e := hdtest.New(t, contacts.Register)
+	ws := e.NewWorkspace()
+	id := ids.New()
+	e.Exec(`INSERT INTO contacts (id, workspace_id, email, name, email_unconfirmed, custom) VALUES ($1, $2, 'typed@example.com', 'Visitor', true, '{"source":"widget"}')`, id, ws.ID)
+	unconfirmed := func() bool {
+		var v bool
+		e.Scalar(`SELECT email_unconfirmed FROM contacts WHERE id = $1`, &v, id)
+		return v
+	}
+	e.Do("PATCH", "/v1/contacts/"+id.String(), ws.Agent.As(ws), map[string]any{"name": "Vera"}).Want(t, 200)
+	if !unconfirmed() {
+		t.Fatal("a name change confirmed the address")
+	}
+	e.Do("PATCH", "/v1/contacts/"+id.String(), ws.Agent.As(ws), map[string]any{"email": "typed@example.com"}).Want(t, 200)
+	if unconfirmed() {
+		t.Fatal("a member's save left the address unconfirmed")
+	}
+}

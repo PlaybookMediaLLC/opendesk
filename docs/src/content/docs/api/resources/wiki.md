@@ -132,7 +132,7 @@ None of these moves the version or adds a revision. `locked` is for the app: the
 | Subpage | `<div data-type="subpage" data-id="<page id>">` |
 | Link to a page | `<a data-type="page" data-id="<page id>" href="/wiki/<page id>">` |
 | Person | `<span data-type="mention" data-id="<user id>">` |
-| Ticket, contact | `<a data-type="ticket" data-id="<ticket id>" href="/tickets/<number>">`, `<a data-type="contact" data-id="<contact id>" href="/contacts/<contact id>">` |
+| Ticket, contact | `<a data-type="ticket" data-id="<ticket id>" href="/tickets/<number>">#<number></a>` (stored with its number alone; the app draws the subject for readers who may see it), `<a data-type="contact" data-id="<contact id>" href="/contacts/<contact id>">` |
 | Ticket list | `<div data-type="tickets" data-id="<saved view id>" data-limit="10">` |
 | Date | `<time data-type="date" datetime="2026-11-07">`, or with a time; `data-reminder="<uuid>"` makes it a [reminder](#reminders) |
 | Inline comment | `<span data-comment="<thread id>">` around the text a thread is on |
@@ -193,7 +193,7 @@ A page with `kind: "database"` keeps `database`, its properties and views; its s
 | Method | Path | Description |
 | --- | --- | --- |
 | `POST` | `/v1/wiki/pages` | `{ kind: "database", database? }` makes a database; `{ parent_id: <database>, title, props }` adds a row; `{ parent_id: <database>, template: true }` a row template |
-| `GET` | `/v1/wiki/databases/{id}/rows` | `{ data: DbRow[], templates: WikiNode[] }`: every row, in order, and the database's row templates |
+| `GET` | `/v1/wiki/databases/{id}/rows` | `?limit=` (1..500, default 200), `?cursor=` → `{ data: DbRow[], next_cursor: string \| null, templates: WikiNode[] }`: the rows, in order, a page at a time (pass `next_cursor` as `cursor` until it is null), and the database's row templates |
 | `PATCH` | `/v1/wiki/pages/{id}` | `database` on a database, `props` on a row |
 
 ```ts

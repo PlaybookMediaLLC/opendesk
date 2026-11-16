@@ -3,6 +3,8 @@ package ai
 import (
 	"context"
 	"errors"
+	"maps"
+	"slices"
 	"strconv"
 
 	"github.com/google/uuid"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/useopendesk/opendesk/internal/ai/decide"
 	"github.com/useopendesk/opendesk/internal/auth"
+	"github.com/useopendesk/opendesk/internal/db"
 	"github.com/useopendesk/opendesk/internal/domain"
 	"github.com/useopendesk/opendesk/internal/helpdesk/hd"
 	"github.com/useopendesk/opendesk/internal/jobs"
@@ -93,32 +96,67 @@ func (s *Service) autoTriage(ctx context.Context, wid, tid uuid.UUID) error {
 	return nil
 }
 
-// triageAction is the hd.AIHooks.Triage hook for the ai_triage automation action. It
-// reads and writes through the trigger's transaction.
-func (s *Service) triageAction(ctx context.Context, tx pgx.Tx, wid, tid uuid.UUID) ([]string, error) {
+// triageResult is a triage the ai_triage automation action computed, waiting to be applied.
+type triageResult struct{ t *Triage }
+
+// triagePrepare is the hd.AIHooks.TriagePrepare hook for the ai_triage automation action: it
+// asks the model through q (the pool), outside the trigger's transaction, and charges the
+// call. A skipped triage is (nil, nil).
+func (s *Service) triagePrepare(ctx context.Context, q db.Querier, wid, tid uuid.UUID) (any, error) {
 	if !s.canTriage() {
 		return nil, nil
 	}
-	res, c, err := s.triage(ctx, tx, wid, nil, tid)
+	res, c, err := s.triage(ctx, q, wid, nil, tid)
 	if err != nil {
-		if skippable(err) {
+		if skippable(err) || isNotFound(err) {
 			s.d.Log.Info("ai_triage skipped", "ticket_id", tid, "reason", errReason(err))
 			return nil, nil
 		}
 		return nil, err
 	}
-	changes, err := applyTriage(ctx, tx, wid, tid, res, false, "automation")
-	if err != nil {
-		return nil, err
-	}
 	c.charge(ctx)
-	return changes, nil
+	return triageResult{t: res}, nil
+}
+
+// triageApply is the hd.AIHooks.TriageApply hook: it writes a triagePrepare result through
+// the trigger's transaction, on a copy, so a retried transaction applies the same result.
+func (s *Service) triageApply(ctx context.Context, tx pgx.Tx, wid, tid uuid.UUID, result any) ([]string, error) {
+	r, ok := result.(triageResult)
+	if !ok || r.t == nil {
+		return nil, nil
+	}
+	return applyTriage(ctx, tx, wid, tid, cloneTriage(r.t), false, "automation")
+}
+
+// cloneTriage copies a triage result deep enough that applyTriage, which records what it
+// applied and suggested on it, leaves the original as the model returned it.
+func cloneTriage(t *Triage) *Triage {
+	c := *t
+	c.Tags = slices.Clone(t.Tags)
+	c.SuggestedTags = slices.Clone(t.SuggestedTags)
+	if t.Suggestions != nil {
+		c.Suggestions = maps.Clone(t.Suggestions)
+	}
+	if t.tagField != nil {
+		c.tagField = maps.Clone(t.tagField)
+	}
+	if t.Decisions.Fields != nil {
+		c.Decisions.Fields = make(map[string]*Decision, len(t.Decisions.Fields))
+		for k, d := range t.Decisions.Fields {
+			if d != nil {
+				dc := *d
+				d = &dc
+			}
+			c.Decisions.Fields[k] = d
+		}
+	}
+	return &c
 }
 
 // decideConditions is the hd.AIHooks.Decide hook for ai_decide automation conditions:
-// every question in one decision call about the ticket, inside the trigger's
-// transaction. A skipped call answers nothing, so those conditions do not hold.
-func (s *Service) decideConditions(ctx context.Context, tx pgx.Tx, wid, tid uuid.UUID, questions []string) (map[string]float64, error) {
+// every question in one decision call about the ticket, read through q (the pool),
+// outside the trigger's transaction. A skipped call answers nothing, so those conditions do not hold.
+func (s *Service) decideConditions(ctx context.Context, q db.Querier, wid, tid uuid.UUID, questions []string) (map[string]float64, error) {
 	if len(questions) == 0 {
 		return nil, nil
 	}
@@ -128,7 +166,7 @@ func (s *Service) decideConditions(ctx context.Context, tx pgx.Tx, wid, tid uuid
 	if dr, err := s.decisionsFor(ctx, wid, nil); err != nil || dr.dc == nil {
 		return nil, err
 	}
-	tc, err := s.loadTicketCtx(ctx, tx, wid, tid, true)
+	tc, err := s.loadTicketCtx(ctx, q, wid, tid, true)
 	if err != nil {
 		if isNotFound(err) {
 			return nil, nil

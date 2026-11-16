@@ -26,12 +26,13 @@ const (
 
 // ChatFollowUpDue reports whether the chat ticket's visitor should get a reply by email:
 // the widget's email_follow_up is on (the ticket's widget, else the workspace's primary
-// widget), the contact has an email and is not blocked, and none of their widget sessions
-// was seen at or after since.
+// widget), the contact has a confirmed email (not one a visitor typed without a verified
+// identity: contacts.email_unconfirmed) and is not blocked, and none of their widget
+// sessions was seen at or after since.
 func ChatFollowUpDue(ctx context.Context, q db.Querier, wid, ticketID uuid.UUID, since time.Time) (bool, error) {
 	var due bool
 	err := q.QueryRow(ctx, `SELECT COALESCE((g.settings ->> 'email_follow_up')::boolean, (w.settings -> 'widget' ->> 'email_follow_up')::boolean, true)
-		AND COALESCE(c.email, '') <> '' AND NOT c.blocked
+		AND COALESCE(c.email, '') <> '' AND NOT c.email_unconfirmed AND NOT c.blocked
 		AND NOT EXISTS (SELECT 1 FROM widget_sessions s WHERE s.contact_id = c.id AND s.workspace_id = t.workspace_id AND s.last_seen_at >= $3)
 		FROM tickets t
 		JOIN workspaces w ON w.id = t.workspace_id

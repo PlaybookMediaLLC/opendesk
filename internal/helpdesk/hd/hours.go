@@ -197,8 +197,79 @@ func (b BusinessHours) AddBusinessMinutes(start time.Time, mins int, loc *time.L
 	return start.Add(time.Duration(mins) * time.Minute)
 }
 
-// OpenAt reports whether the business hours are open at now. A schedule with no open
-// time is never open. Callers check Enabled first: hours that are off read as open.
+// BusinessMinutesBetween counts the whole open minutes from start to end, by the schedule's
+// ranges in loc and without holidays, as AddBusinessMinutes counts them. With business
+// hours off or no open time it counts wall-clock minutes. end before start is 0.
+func (b BusinessHours) BusinessMinutesBetween(start, end time.Time, loc *time.Location) int {
+	if !end.After(start) {
+		return 0
+	}
+	if !b.Enabled || !b.open() {
+		return int(end.Sub(start) / time.Minute)
+	}
+	if loc == nil {
+		loc = time.UTC
+	}
+	holidays := map[string]bool{}
+	for _, h := range b.Holidays {
+		holidays[h.Date] = true
+	}
+	var open time.Duration
+	from, to := start.In(loc), end.In(loc)
+	y, m, d := from.Date()
+	for i := 0; i < maxScanDays; i++ {
+		day := time.Date(y, m, d+i, 0, 0, 0, 0, loc)
+		if !day.Before(to) {
+			break
+		}
+		if holidays[day.Format(time.DateOnly)] {
+			continue
+		}
+		key := Weekdays[(int(day.Weekday())+6)%7]
+		for _, r := range b.Schedule[key] {
+			s, _ := minutesOf(r.Start)
+			e, _ := minutesOf(r.End)
+			ws := time.Date(day.Year(), day.Month(), day.Day(), s/60, s%60, 0, 0, loc)
+			we := time.Date(day.Year(), day.Month(), day.Day(), e/60, e%60, 0, 0, loc)
+			if ws.Before(from) {
+				ws = from
+			}
+			if we.After(to) {
+				we = to
+			}
+			if we.After(ws) {
+				open += we.Sub(ws)
+			}
+		}
+	}
+	return int(open / time.Minute)
+}
+
+// OpenAt reports whether the business hours are open at now: now falls in one of the day's
+// ranges in loc (start included, end not), on a day that is not a holiday. A schedule with
+// no open time is never open. Callers check Enabled first: hours that are off read as open.
 func OpenAt(b BusinessHours, loc *time.Location, now time.Time) bool {
-	return b.open() && b.AddBusinessMinutes(now, 1, loc).Equal(now.Add(time.Minute))
+	if !b.open() {
+		return false
+	}
+	if loc == nil {
+		loc = time.UTC
+	}
+	cur := now.In(loc)
+	for _, h := range b.Holidays {
+		if h.Date == cur.Format(time.DateOnly) {
+			return false
+		}
+	}
+	key := Weekdays[(int(cur.Weekday())+6)%7]
+	for _, r := range b.Schedule[key] {
+		s, _ := minutesOf(r.Start)
+		e, _ := minutesOf(r.End)
+		ws := time.Date(cur.Year(), cur.Month(), cur.Day(), s/60, s%60, 0, 0, loc)
+		we := time.Date(cur.Year(), cur.Month(), cur.Day(), e/60, e%60, 0, 0, loc)
+		if !cur.Before(ws) && cur.Before(we) {
+			return true
+		}
+	}
+	return false
 }

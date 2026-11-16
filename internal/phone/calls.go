@@ -589,7 +589,7 @@ func (s *Service) place(ctx context.Context, tx pgx.Tx, c PhoneConnection, call 
 		return err
 	}
 	if rule := res.RuleID(); rule != nil {
-		if err := routing.Count(ctx, tx, *rule); err != nil {
+		if err := routing.Count(ctx, tx, wid, *rule); err != nil {
 			return err
 		}
 	}

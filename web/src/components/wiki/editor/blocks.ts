@@ -376,7 +376,9 @@ export const TicketMention = Node.create({
   },
   // Before the link mark's a[href], which would otherwise take it as a plain link.
   parseHTML: () => [{ tag: 'a[data-type="ticket"]', priority: 100 }],
-  renderHTML: ({ node }) => ["a", { "data-type": "ticket", "data-id": node.attrs.id, href: `/tickets/${node.attrs.number}` }, `#${node.attrs.number} ${node.attrs.label}`.trim()],
+  // Saved as its number alone: the subject is drawn live for a reader who may see the ticket
+  // (contracts/wiki.md "Mentions"), so the page never holds it.
+  renderHTML: ({ node }) => ["a", { "data-type": "ticket", "data-id": node.attrs.id, href: `/tickets/${node.attrs.number}` }, `#${node.attrs.number}`],
   renderText: ({ node }) => `#${node.attrs.number}`,
   addNodeView() {
     return ReactNodeViewRenderer(TicketMentionView, { as: "span" });

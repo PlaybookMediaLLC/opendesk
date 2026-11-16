@@ -91,6 +91,14 @@ async function uploadFile(slug: string, file: File): Promise<CustomerUpload> {
   if (!response.ok) throw new ApiError({ ...(await response.json().catch(() => ({}))), status: response.status });
   return response.json();
 }
+
+/** The portal being viewed: a customer's requests are read and answered per brand. */
+function portalQuery(slug: string, cursor?: string): string {
+  const q = new URLSearchParams({ workspace_slug: slug });
+  if (cursor) q.set("cursor", cursor);
+  return `?${q.toString()}`;
+}
+
 export const customerPortal = {
   config: (slug: string) => request<PortalConfig>(`${publicPath(slug)}/config`),
   login: async (slug: string, email: string, password: string, turnstile_token?: string) => {
@@ -106,13 +114,13 @@ export const customerPortal = {
     catch (error) { if (!(error instanceof ApiError) || error.status !== 401) throw error; }
     clearCustomer();
   },
-  tickets: (slug: string, cursor?: string) => authed<Page<CustomerTicket>>(slug, `/v1/customer/portal/tickets${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
-  ticket: (slug: string, id: string) => authed<CustomerTicket>(slug, `/v1/customer/portal/tickets/${encodeURIComponent(id)}`),
-  messages: (slug: string, id: string, cursor?: string) => authed<Page<CustomerMessage>>(slug, `/v1/customer/portal/tickets/${encodeURIComponent(id)}/messages${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
+  tickets: (slug: string, cursor?: string) => authed<Page<CustomerTicket>>(slug, `/v1/customer/portal/tickets${portalQuery(slug, cursor)}`),
+  ticket: (slug: string, id: string) => authed<CustomerTicket>(slug, `/v1/customer/portal/tickets/${encodeURIComponent(id)}${portalQuery(slug)}`),
+  messages: (slug: string, id: string, cursor?: string) => authed<Page<CustomerMessage>>(slug, `/v1/customer/portal/tickets/${encodeURIComponent(id)}/messages${portalQuery(slug, cursor)}`),
   /** Starts a request as the signed-in customer; the slug only names the portal's brand. */
   create: (slug: string, subject: string, body: string, attachmentIds: string[] = []) =>
     authed<CustomerTicket>(slug, "/v1/customer/portal/tickets", { workspace_slug: slug, subject, body, ...(attachmentIds.length ? { attachment_ids: attachmentIds } : {}) }),
   /** Uploads one file for a request; the answer's id goes in the request's attachment ids. */
   upload: (slug: string, file: File) => uploadFile(slug, file),
-  reply: (slug: string, id: string, body: string) => authed<CustomerMessage>(slug, `/v1/customer/portal/tickets/${encodeURIComponent(id)}/messages`, { body }),
+  reply: (slug: string, id: string, body: string) => authed<CustomerMessage>(slug, `/v1/customer/portal/tickets/${encodeURIComponent(id)}/messages${portalQuery(slug)}`, { body }),
 };

@@ -155,3 +155,18 @@ func TestNewBlocks(t *testing.T) {
 		}
 	}
 }
+
+// A ticket mention reads as its number alone in Markdown and in an article, even from a body
+// stored with the subject the writer saw.
+func TestTicketMentionNumberOnly(t *testing.T) {
+	const body = `<p>See <a data-type="ticket" data-id="55555555-5555-4555-8555-555555555555" href="/tickets/812">#812 Termination: J. Doe</a>` +
+		` and <a data-type="ticket" data-id="66666666-6666-4666-8666-666666666666">#9 Payroll dispute</a>.</p>`
+	md := Markdown(body, MarkdownOptions{})
+	if strings.Contains(md, "Termination") || strings.Contains(md, "Payroll") || !strings.Contains(md, "#812") || !strings.Contains(md, "#9") {
+		t.Errorf("markdown:\n%s", md)
+	}
+	out, _ := Article(body)
+	if strings.Contains(out, "Termination") || strings.Contains(out, "Payroll") || !strings.Contains(out, "#812") || !strings.Contains(out, "#9") {
+		t.Errorf("article:\n%s", out)
+	}
+}

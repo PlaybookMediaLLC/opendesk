@@ -317,7 +317,7 @@ func (s *service) processInbound(ctx context.Context, wid, inboundID uuid.UUID) 
 				}
 			}
 			if rule := route.RuleID(); rule != nil {
-				if err := routing.Count(ctx, tx, *rule); err != nil {
+				if err := routing.Count(ctx, tx, wid, *rule); err != nil {
 					return err
 				}
 			}

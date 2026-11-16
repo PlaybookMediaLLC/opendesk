@@ -83,6 +83,7 @@ var TicketSelect = `SELECT t.id, t.number, t.alias, t.subject, t.status, t.prior
 	t.last_message_at, t.last_customer_message_at, t.waiting_since, t.unanswered_count, t.last_message_preview, t.message_count, t.spam,
 	t.csat_score, t.csat_comment, t.custom, t.fields, t.created_at, t.updated_at,
 	t.brand_id, t.widget_id, t.origin_mailbox_id, t.received_at, t.page_url, t.routed, t.visitor_read_at,
+	t.sla_started_at, t.sla_paused_at, t.sla_first_response_breached_at, t.sla_resolution_breached_at, ` + SLAReplyPendingSQL("t") + `,
 	c.id, c.email, c.name, c.avatar_url,
 	u.id, u.name, u.email, u.avatar_url,
 	` + TagRefsSQL("ticket_tags", "lt.ticket_id = t.id") + `,
@@ -93,6 +94,17 @@ var TicketSelect = `SELECT t.id, t.number, t.alias, t.subject, t.status, t.prior
 FROM tickets t
 LEFT JOIN contacts c ON c.id = t.contact_id
 LEFT JOIN users u ON u.id = t.assignee_id`
+
+// SLAReplyPendingSQL is whether the team has yet to reply in the ticket's current SLA cycle,
+// on the tickets alias a ("" for none): in the first cycle (sla_started_at null) until its
+// first response (first_responded_at, which merges and imports keep too), in a cycle a reopen
+// started until the team's first reply in it (sla_responded_at).
+func SLAReplyPendingSQL(a string) string {
+	if a != "" {
+		a += "."
+	}
+	return "(CASE WHEN " + a + "sla_started_at IS NULL THEN " + a + "first_responded_at IS NULL ELSE " + a + "sla_responded_at IS NULL END)"
+}
 
 // LastNoteSQL is the ticket's newest internal note (Ticket.last_note) as JSON, or NULL: a
 // member's or an API key's note on the ticket itself, not deleted or sent as a reply. The
@@ -144,7 +156,8 @@ func scanLastNote(raw []byte) (*LastNote, error) {
 func ScanTicket(row pgx.Row) (Ticket, error) {
 	var t Ticket
 	var slaID *uuid.UUID
-	var frDue, resDue *time.Time
+	var frDue, resDue, slaStarted, slaPaused, frBreached, resBreached *time.Time
+	var replyPending bool
 	var csatScore *int16
 	var csatComment string
 	var cID *uuid.UUID
@@ -157,6 +170,7 @@ func ScanTicket(row pgx.Row) (Ticket, error) {
 		&t.LastMessageAt, &t.LastCustomerMessageAt, &t.WaitingSince, &t.UnansweredCount, &t.LastMessagePreview, &t.MessageCount, &t.Spam,
 		&csatScore, &csatComment, &t.Custom, &t.Fields, &t.CreatedAt, &t.UpdatedAt,
 		&t.BrandID, &t.WidgetID, &t.OriginMailboxID, &t.ReceivedAt, &t.PageURL, &t.Routed, &t.VisitorReadAt,
+		&slaStarted, &slaPaused, &frBreached, &resBreached, &replyPending,
 		&cID, &cEmail, &cName, &cAvatar, &uID, &uName, &uEmail, &uAvatar, &tags, &skills, &lastNote)
 	if err != nil {
 		return t, err
@@ -171,11 +185,13 @@ func ScanTicket(row pgx.Row) (Ticket, error) {
 		t.Assignee = &UserRef{ID: *uID, Name: deref(uName), Email: deref(uEmail), AvatarURL: Avatar(deref(uAvatar))}
 	}
 	if slaID != nil {
-		now := time.Now()
-		open := t.Status != StatusSolved && t.Status != StatusClosed
-		breached := open && ((resDue != nil && now.After(*resDue)) ||
-			(t.FirstRespondedAt == nil && frDue != nil && now.After(*frDue)))
-		t.SLA = &TicketSLA{PolicyID: *slaID, FirstResponseDueAt: frDue, ResolutionDueAt: resDue, Breached: breached}
+		t.SLA = &TicketSLA{PolicyID: *slaID, FirstResponseDueAt: frDue, ResolutionDueAt: resDue, StartedAt: slaStarted, PausedAt: slaPaused,
+			FirstResponseBreachedAt: frBreached, ResolutionBreachedAt: resBreached, ReplyPending: replyPending}
+		if t.SLA.StartedAt == nil {
+			created := t.CreatedAt
+			t.SLA.StartedAt = &created
+		}
+		t.SLA.Breached = slaBreached(time.Now(), t.Status, t.SLA)
 	}
 	if csatScore != nil {
 		t.CSAT = &CSAT{Score: int(*csatScore), Comment: csatComment}
@@ -195,6 +211,32 @@ func ScanTicket(row pgx.Row) (Ticket, error) {
 		return t, err
 	}
 	return t, nil
+}
+
+// slaBreached reports whether the ticket's current SLA cycle missed a target: one is
+// recorded (sla_*_breached_at, which stays once set, solved or not), or, on a ticket still
+// being worked, the reply target passed while the team has not replied, or the resolution
+// target passed while its clock runs.
+func slaBreached(now time.Time, status string, s *TicketSLA) bool {
+	if s.FirstResponseBreachedAt != nil || s.ResolutionBreachedAt != nil {
+		return true
+	}
+	if status == StatusSolved || status == StatusClosed {
+		return false
+	}
+	return (s.PausedAt == nil && s.ResolutionDueAt != nil && now.After(*s.ResolutionDueAt)) ||
+		(s.ReplyPending && s.FirstResponseDueAt != nil && now.After(*s.FirstResponseDueAt))
+}
+
+// ResetSLACycle starts a new SLA cycle at at for a ticket that opened again after it was
+// solved: no target, breach or pause of the last cycle carries over, and the caller sets the
+// new targets (contracts/api.md "SLA"). replied: no reply is due in the new cycle.
+func ResetSLACycle(ctx context.Context, tx pgx.Tx, wid, tid uuid.UUID, at time.Time, replied bool) error {
+	_, err := tx.Exec(ctx, `UPDATE tickets SET sla_started_at = $3, sla_responded_at = CASE WHEN $4 THEN $3::timestamptz END,
+		sla_paused_at = NULL, sla_paused_minutes = 0, first_response_due_at = NULL, resolution_due_at = NULL,
+		sla_first_response_breached_at = NULL, sla_resolution_breached_at = NULL
+		WHERE workspace_id = $1 AND id = $2`, wid, tid, at, replied)
+	return err
 }
 
 // LoadTicket loads one ticket, scoped to the workspace. Deleted tickets are not found.

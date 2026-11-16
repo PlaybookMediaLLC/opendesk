@@ -51,6 +51,69 @@ func TestAddBusinessMinutes(t *testing.T) {
 	}
 }
 
+// BusinessMinutesBetween counts what AddBusinessMinutes adds: the open minutes between two
+// moments, across closed nights, weekends, holidays and a DST change.
+func TestBusinessMinutesBetween(t *testing.T) {
+	berlin, _ := time.LoadLocation("Europe/Berlin")
+	bh := hd.DefaultBusinessHours()
+	bh.Enabled = true
+	bh.Holidays = []hd.Holiday{{Date: "2026-12-25", Name: "Christmas"}}
+	at := func(s string) time.Time {
+		v, err := time.ParseInLocation("2006-01-02 15:04", s, berlin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	cases := []struct {
+		from, to string
+		want     int
+	}{
+		{"2026-10-12 10:00", "2026-10-12 11:00", 60},
+		{"2026-10-12 16:30", "2026-10-13 09:30", 60},
+		{"2026-10-16 16:00", "2026-10-19 10:00", 120},
+		{"2026-10-17 12:00", "2026-10-18 12:00", 0},
+		{"2026-12-24 16:00", "2026-12-28 10:00", 120},
+		{"2026-10-23 16:00", "2026-10-26 10:00", 120},
+		{"2026-10-12 11:00", "2026-10-12 10:00", 0},
+	}
+	for _, c := range cases {
+		if got := bh.BusinessMinutesBetween(at(c.from), at(c.to), berlin); got != c.want {
+			t.Errorf("%s..%s = %d, want %d", c.from, c.to, got, c.want)
+		}
+		if c.want > 0 {
+			if back := bh.AddBusinessMinutes(at(c.from), c.want, berlin); !back.Equal(at(c.to)) {
+				t.Errorf("%s + %d = %s, want %s", c.from, c.want, back.In(berlin).Format("2006-01-02 15:04"), c.to)
+			}
+		}
+	}
+	off := hd.DefaultBusinessHours()
+	if got := off.BusinessMinutesBetween(at("2026-10-17 12:00"), at("2026-10-17 13:30"), berlin); got != 90 {
+		t.Fatalf("off: %d", got)
+	}
+}
+
+// OpenAt holds through the last minute of a range, seconds included, and not at its end.
+func TestOpenAtEdges(t *testing.T) {
+	bh := hd.DefaultBusinessHours()
+	bh.Enabled = true
+	bh.Holidays = []hd.Holiday{{Date: "2026-12-25", Name: "Christmas"}}
+	cases := map[string]bool{
+		"2026-10-12T16:59:30Z": true,
+		"2026-10-12T17:00:00Z": false,
+		"2026-10-12T09:00:00Z": true,
+		"2026-10-12T08:59:59Z": false,
+		"2026-10-17T12:00:00Z": false, // Saturday
+		"2026-12-25T12:00:00Z": false, // holiday
+	}
+	for s, want := range cases {
+		now, _ := time.Parse(time.RFC3339, s)
+		if got := hd.OpenAt(bh, time.UTC, now); got != want {
+			t.Errorf("OpenAt(%s) = %v, want %v", s, got, want)
+		}
+	}
+}
+
 func TestValidateBusinessHours(t *testing.T) {
 	ok := hd.BusinessHours{Enabled: true, Schedule: map[string][]hd.TimeRange{
 		"mon": {{Start: "13:00", End: "17:00"}, {Start: "09:00", End: "12:00"}}, "sat": {{Start: "10:00", End: "24:00"}}},

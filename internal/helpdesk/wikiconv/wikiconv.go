@@ -6,6 +6,7 @@
 package wikiconv
 
 import (
+	"regexp"
 	"strings"
 
 	"golang.org/x/net/html"
@@ -23,6 +24,23 @@ func parse(body string) *html.Node {
 		root.AppendChild(n)
 	}
 	return root
+}
+
+var (
+	ticketHref   = regexp.MustCompile(`^/tickets/([0-9]{1,18})$`)
+	ticketNumber = regexp.MustCompile(`^\s*#([0-9]{1,18})`)
+)
+
+// ticketLabel is how a ticket mention reads outside the app: its number alone ("#42"),
+// never a subject (contracts/wiki.md "Mentions"), whatever text it was stored with.
+func ticketLabel(n *html.Node) string {
+	if m := ticketHref.FindStringSubmatch(attr(n, "href")); m != nil {
+		return "#" + m[1]
+	}
+	if m := ticketNumber.FindStringSubmatch(text(n)); m != nil {
+		return "#" + m[1]
+	}
+	return "#"
 }
 
 func attr(n *html.Node, key string) string {

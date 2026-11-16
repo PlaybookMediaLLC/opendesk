@@ -584,8 +584,11 @@ kept for a teammate who never opted in) for 90 days, and audit-logged as `assist
 Condition `{field: "ai_decide", op: "gt" | "lt", value: "0.7", question: "Is the customer at risk of
 churning?"}`: a Noul asked of the decision engine about the ticket (the same state as triage). It holds when
 the probability of yes is above (`gt`) or below (`lt`) `value` (0.01..0.99). The question is 3..300
-characters of plain text written by an admin. Every `ai_decide` question of one trigger run is asked in one
-call (about $0.01, feature `decide`) and answers are reused for the rest of the run. Without a decision engine,
+characters of plain text written by an admin. The `ai_decide` questions of the automations a trigger run
+evaluates are asked together, in one call (about $0.01, feature `decide`), and answers are reused for the rest of
+the run. No model is called while the trigger's transaction holds the ticket: a run that meets a question not asked
+yet rolls back, asks it outside any transaction about the ticket as it is committed, and runs again with the
+answer (a few rounds at most; a question still not asked then counts as unanswered). Without a decision engine,
 AI off, an AI balance too low or a failed call, an `ai_decide` condition does not hold (the automation does not run).
 At most 3 `ai_decide` conditions per automation.
 
@@ -595,8 +598,9 @@ New automation action `{type: "ai_triage", value: ""}` (about $0.01) and conditi
 triage runs on `ticket_created` before other automations, so a sentiment condition on the
 same trigger sees its result. Auto-triage skips spam and already triaged tickets. When AI is
 off, the AI balance is used up or the provider fails, auto-triage and the `ai_triage` action are
-skipped (logged) and the rest of the automation runs. The action calls the fast model inside
-the trigger's transaction.
+skipped (logged) and the rest of the automation runs. The action calls the fast model outside
+the trigger's transaction, as `ai_decide` does, once per run, and its result is applied in the transaction to the
+ticket as it is then (priority and severity only raised, a team only set on a ticket without one).
 
 ### Ollie runs a procedure
 

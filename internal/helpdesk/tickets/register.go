@@ -46,6 +46,7 @@ func RegisterWorkers(d *deps.Deps, w *river.Workers) {
 	river.AddWorker(w, &SLAScanWorker{D: d})
 	river.AddWorker(w, &SnoozeWakeWorker{D: d})
 	river.AddWorker(w, &AutoCloseWorker{D: d})
+	river.AddWorker(w, &AssignBacklogWorker{D: d})
 	river.AddWorker(w, &PurgeAttachmentsWorker{D: d})
 	river.AddWorker(w, &ScheduledReplyWorker{D: d})
 }

@@ -67,7 +67,7 @@ Further down the Assignment page, **Team availability** lists everyone who can b
 - The pool is the leads and members of the ticket's team, else of its mailbox's team, else every owner, admin and agent of the workspace.
 - Observers and viewers are never assigned.
 - A teammate must be **Online** and under their cap.
-- When nobody fits, the ticket stays unassigned and is tried again when the customer replies.
+- When nobody fits, the ticket stays unassigned and waits. As soon as someone fits, for example an agent who comes online or finishes a ticket and drops under their limit, the open ticket that waited longest goes to them, within a minute. It is also tried again when the customer replies.
 
 </Callout>
 
@@ -80,7 +80,7 @@ A visitor in the chat widget is waiting on the page right now. Under **Live chat
 
 - A chat goes to a teammate of its team who has the skill, is **Online** (not away) and is under their cap.
 - When Ollie answers chats, the chat is given to someone when Ollie hands it over (the visitor asks for a person, or Ollie can't help), so Ollie keeps answering until then.
-- Nobody available, for example at night: the chat stays unassigned and the team hears of it as usual. It is tried again when the visitor writes again.
+- Nobody available, for example at night: the chat stays unassigned and the team hears of it as usual. It goes to the first member who becomes available, within a minute, or is tried again when the visitor writes again.
 - A chat that already has someone keeps them.
 - The teammate who gets it sees a **New chat** card on whatever page they are on, with the visitor's name and first words, and **Open**, which opens the chat in a new tab so the page they are on stays. While the card shows, the browser tab's title blinks when the tab is in the background. Their desktop notification still shows.
 

@@ -515,7 +515,7 @@ func (h *handler) session(ctx context.Context, in *widgetSessionInput) (*widgetS
 				return err
 			}
 		} else if email != "" || name != "" {
-			if err := h.fillContact(ctx, tx, wid, contactID, email, name); err != nil {
+			if err := h.fillContact(ctx, tx, wid, contactID, email, name, verified); err != nil {
 				return err
 			}
 		}
@@ -578,7 +578,8 @@ func emailTaken(ctx context.Context, tx pgx.Tx, wid uuid.UUID, email string, exc
 // insertContact creates a contact. The email is stored only when no other contact has it:
 // an address a visitor types is unproven, so it never links the visitor to an existing
 // contact's conversations. A claimed address that is taken is kept in custom.widget_email
-// for agents to see.
+// for agents to see. Without a verified identity (externalID nil) the stored address is
+// unconfirmed: chat replies are not emailed to it (domain.ChatFollowUpDue).
 func (h *handler) insertContact(ctx context.Context, tx pgx.Tx, wid uuid.UUID, externalID *string, email, name string) (uuid.UUID, error) {
 	if name == "" {
 		name = displayname.FromEmail(email)
@@ -600,8 +601,8 @@ func (h *handler) insertContact(ctx context.Context, tx pgx.Tx, wid uuid.UUID, e
 		}
 	}
 	id := ids.New()
-	tag, err := tx.Exec(ctx, `INSERT INTO contacts (id, workspace_id, email, name, external_id, custom) VALUES ($1,$2,$3,$4,$5,$6)
-		ON CONFLICT DO NOTHING`, id, wid, emailCol, name, externalID, custom)
+	tag, err := tx.Exec(ctx, `INSERT INTO contacts (id, workspace_id, email, name, external_id, custom, email_unconfirmed) VALUES ($1,$2,$3,$4,$5,$6,$7)
+		ON CONFLICT DO NOTHING`, id, wid, emailCol, name, externalID, custom, emailCol != nil && externalID == nil)
 	if err != nil {
 		return uuid.Nil, err
 	}
@@ -639,12 +640,13 @@ func (h *handler) verifiedContact(ctx context.Context, tx pgx.Tx, wid uuid.UUID,
 	if err != nil {
 		return uuid.Nil, err
 	}
-	return id, h.fillContact(ctx, tx, wid, id, email, name)
+	return id, h.fillContact(ctx, tx, wid, id, email, name, true)
 }
 
 // fillContact sets a missing name or email on the session's own contact. The email is
-// set only when the contact has none and no other contact uses it.
-func (h *handler) fillContact(ctx context.Context, tx pgx.Tx, wid, id uuid.UUID, email, name string) error {
+// set only when the contact has none and no other contact uses it; without a verified
+// identity it is unconfirmed (insertContact).
+func (h *handler) fillContact(ctx context.Context, tx pgx.Tx, wid, id uuid.UUID, email, name string, verified bool) error {
 	changed := false
 	if email != "" {
 		taken, err := emailTaken(ctx, tx, wid, email, id)
@@ -659,7 +661,8 @@ func (h *handler) fillContact(ctx context.Context, tx pgx.Tx, wid, id uuid.UUID,
 			}
 			changed = changed || tag.RowsAffected() > 0
 		} else {
-			tag, err := tx.Exec(ctx, `UPDATE contacts SET email = $3, updated_at = now() WHERE workspace_id = $1 AND id = $2 AND email IS NULL`, wid, id, email)
+			tag, err := tx.Exec(ctx, `UPDATE contacts SET email = $3, email_unconfirmed = NOT $4, updated_at = now()
+				WHERE workspace_id = $1 AND id = $2 AND email IS NULL`, wid, id, email, verified)
 			if err != nil {
 				return err
 			}

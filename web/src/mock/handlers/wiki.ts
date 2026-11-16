@@ -1293,7 +1293,7 @@ function excerpt(text: string, n: number): string {
 }
 
 function registerDatabases() {
-  get("/v1/wiki/databases/:id/rows", (ctx): DbRows => {
+  get("/v1/wiki/databases/:id/rows", (ctx): DbRows & { next_cursor: null } => {
     const st = stateOf(ctx.ws);
     const d = find(ctx, st);
     if (d.kind !== "database") throw notFound("Database");
@@ -1312,7 +1312,7 @@ function registerDatabases() {
           updated_by: userRef(r.updated_by),
         }),
       );
-    return { data, templates: under.filter((r) => r.template).map(node) };
+    return { data, next_cursor: null, templates: under.filter((r) => r.template).map(node) };
   });
 }
 

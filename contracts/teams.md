@@ -307,7 +307,11 @@ email too when all of these hold (the first message of a chat the team starts, c
 
 - the widget's `email_follow_up` is on (the conversation's widget; for an older chat without one, the
   default brand's first widget);
-- the visitor has an email and is not blocked;
+- the visitor has a confirmed email and is not blocked. An address a visitor typed in the widget
+  without a verified identity (`user_hash`) is kept on the contact unconfirmed, and replies are not
+  emailed to it; it is confirmed when a member sets the contact's `email` (PATCH, even to the same
+  address), when mail comes from it, when the portal's identity provider vouches for it, or when a
+  member opens a ticket for it. A verified visitor's address is confirmed;
 - the visitor is not on the page: none of their widget sessions made a request in the last 2 minutes
   when the reply was posted, nor any time after it until the email goes, a minute later.
 
@@ -404,7 +408,9 @@ gateway pushes what is scoped to that team only to sockets that have it (contrac
 ## Settings scoped to a team
 
 - **Business hours**: a team's own `business_hours`, else the workspace's. Used for SLA timers on its
-  tickets, the widget's `open`, and AI email answers' "outside hours".
+  tickets, the widget's `open`, and AI email answers' "outside hours". A team's own hours that are off
+  (`enabled: false`) mean the team works around the clock: SLA timers on its tickets count every minute,
+  whatever the workspace's hours; `business_hours: null` follows the workspace's.
 - **SLA**: the first enabled policy, in position order, whose `team_id` is the ticket's team or null
   and whose `priority` matches.
 - **Saved replies**: the composer (and Ollie's drafts) offer replies with no team and those of the ticket's team. A

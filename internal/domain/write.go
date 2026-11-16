@@ -26,7 +26,9 @@ import (
 type Jobs = *river.Client[pgx.Tx]
 
 // UpsertContactByEmail finds or creates the contact for an email address. A name is
-// filled in only when the contact has none; untrusted names are cleaned, not refused.
+// filled in only when the contact has none; untrusted names are cleaned, not refused. The
+// address is confirmed (contacts.email_unconfirmed): mail came from it, a provider vouched
+// for it or a member named it.
 func UpsertContactByEmail(ctx context.Context, tx pgx.Tx, wid uuid.UUID, email, name string) (uuid.UUID, bool, error) {
 	return upsertContactByEmail(ctx, tx, wid, email, name, true)
 }
@@ -60,7 +62,7 @@ func upsertContactByEmail(ctx context.Context, tx pgx.Tx, wid uuid.UUID, email, 
 	}
 	err := tx.QueryRow(ctx, `INSERT INTO contacts (id, workspace_id, email, name) VALUES ($1, $2, $3, $4)
 		ON CONFLICT (workspace_id, email) WHERE email IS NOT NULL
-		DO UPDATE SET name = CASE WHEN contacts.name = '' THEN EXCLUDED.name ELSE contacts.name END
+		DO UPDATE SET name = CASE WHEN contacts.name = '' THEN EXCLUDED.name ELSE contacts.name END, email_unconfirmed = false
 		RETURNING id, (xmax = 0)`, ids.New(), wid, email, name).Scan(&id, &created)
 	if err != nil {
 		return uuid.Nil, false, fmt.Errorf("upsert contact: %w", err)
@@ -416,6 +418,7 @@ func AddMessage(ctx context.Context, tx pgx.Tx, jc Jobs, nm NewMessage) (Message
 
 	// Ticket bookkeeping. Notes do not move the conversation forward.
 	var changes []string
+	reopened := false
 	if nm.Kind == "reply" {
 		preview := truncateRunes(strings.Join(strings.Fields(nm.BodyText), " "), 200)
 		customer := nm.Direction == "inbound"
@@ -428,7 +431,9 @@ func AddMessage(ctx context.Context, tx pgx.Tx, jc Jobs, nm NewMessage) (Message
 				newStatus = StatusOpen
 			}
 		}
-		setFirst := !customer && nm.AuthorType == "user" && firstResponded == nil
+		agentReply := !customer && nm.AuthorType == "user"
+		setFirst := agentReply && firstResponded == nil
+		// sla_responded_at: the team's first reply in the ticket's SLA cycle (contracts/api.md "SLA").
 		_, err := tx.Exec(ctx, `UPDATE tickets SET last_message_at = CASE WHEN $8 THEN GREATEST(last_message_at, $3) ELSE $3 END, last_message_preview = $4,
 			message_count = message_count + 1, updated_at = CASE WHEN $8 THEN GREATEST(updated_at, $3) ELSE now() END,
 			last_customer_message_at = CASE WHEN $5 THEN $3 ELSE last_customer_message_at END,
@@ -436,10 +441,19 @@ func AddMessage(ctx context.Context, tx pgx.Tx, jc Jobs, nm NewMessage) (Message
 			unanswered_count = CASE WHEN $5 THEN unanswered_count + 1 ELSE 0 END,
 			status = $6, solved_at = CASE WHEN $6 = 'open' THEN NULL ELSE solved_at END,
 			snoozed_until = CASE WHEN $6 = 'on_hold' THEN snoozed_until ELSE NULL END,
-			first_responded_at = CASE WHEN $7 THEN $3 ELSE first_responded_at END
-			WHERE workspace_id = $1 AND id = $2`, nm.WorkspaceID, nm.TicketID, nm.CreatedAt, preview, customer, newStatus, setFirst, nm.Imported)
+			first_responded_at = CASE WHEN $7 THEN $3 ELSE first_responded_at END,
+			sla_responded_at = CASE WHEN $9 AND sla_responded_at IS NULL THEN $3 ELSE sla_responded_at END
+			WHERE workspace_id = $1 AND id = $2`, nm.WorkspaceID, nm.TicketID, nm.CreatedAt, preview, customer, newStatus, setFirst, nm.Imported, agentReply)
 		if err != nil {
 			return Message{}, fmt.Errorf("update ticket: %w", err)
+		}
+		// A customer's message that opens a solved ticket again starts a new SLA cycle from
+		// itself; the trigger sets its targets (TicketTriggerArgs.Reopened).
+		if status == StatusSolved && newStatus == StatusOpen {
+			reopened = true
+			if err := ResetSLACycle(ctx, tx, nm.WorkspaceID, nm.TicketID, nm.CreatedAt, false); err != nil {
+				return Message{}, err
+			}
 		}
 		if newStatus != status {
 			changes = append(changes, "status")
@@ -562,7 +576,7 @@ func AddMessage(ctx context.Context, tx pgx.Tx, jc Jobs, nm NewMessage) (Message
 	}
 	if trigger != "none" {
 		if _, err := jc.InsertTx(ctx, tx, jobs.TicketTriggerArgs{WorkspaceID: nm.WorkspaceID, TicketID: nm.TicketID,
-			Trigger: trigger, MessageID: &id, ActorUserID: nm.AuthorUserID}, nil); err != nil {
+			Trigger: trigger, MessageID: &id, ActorUserID: nm.AuthorUserID, Reopened: reopened}, nil); err != nil {
 			return Message{}, fmt.Errorf("queue trigger: %w", err)
 		}
 	}

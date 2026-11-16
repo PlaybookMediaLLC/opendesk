@@ -39,29 +39,102 @@ func (w *TriggerWorker) Work(ctx context.Context, job *river.Job[jobs.TicketTrig
 
 var errCallTicketMoved = errors.New("call ticket moved during trigger")
 
-// RunTrigger applies SLA policies, automations, auto-assignment and the new ticket and
-// reply notifications for one ticket change, in one transaction.
-func RunTrigger(ctx context.Context, d *deps.Deps, a jobs.TicketTriggerArgs) error {
-	for {
-		err := runTrigger(ctx, d, a)
-		if !errors.Is(err, errCallTicketMoved) {
-			return err
-		}
-	}
+// maxAIRounds bounds how often one trigger run goes back for model answers before it
+// treats the questions still unasked as unanswered.
+const maxAIRounds = 4
+
+// needAI stops a trigger transaction that needs a model's answer it does not have yet: the
+// transaction rolls back, RunTrigger asks outside any transaction and runs it again.
+type needAI struct {
+	tid       uuid.UUID
+	questions []string
+	triage    bool
 }
 
-func runTrigger(ctx context.Context, d *deps.Deps, a jobs.TicketTriggerArgs) error {
+func (e *needAI) Error() string { return "trigger needs model answers" }
+
+// aiAnswers are the model's answers of one trigger run, asked outside its transaction and
+// reused for the rest of the run: ai_decide probabilities by question, and the ai_triage
+// result by ticket (nil when triage skipped).
+type aiAnswers struct {
+	decided map[string]float64
+	asked   map[string]bool
+	triage  map[uuid.UUID]any
+	// final: no more rounds; what was not asked stays unanswered.
+	final bool
+}
+
+func newAIAnswers() *aiAnswers {
+	return &aiAnswers{decided: map[string]float64{}, asked: map[string]bool{}, triage: map[uuid.UUID]any{}}
+}
+
+// fetch asks what need names, on the pool: the model is never called while a transaction
+// holds the ticket.
+func (a *aiAnswers) fetch(ctx context.Context, d *deps.Deps, wid uuid.UUID, need *needAI) error {
+	h := hd.GetAIHooks()
+	for _, q := range need.questions {
+		a.asked[q] = true
+	}
+	if len(need.questions) > 0 && h != nil && h.Decide != nil {
+		got, err := h.Decide(ctx, d.DB.Pool, wid, need.tid, need.questions)
+		if err != nil {
+			return err
+		}
+		for q, p := range got {
+			a.decided[q] = p
+		}
+	}
+	if need.triage {
+		var res any
+		if h != nil && h.TriagePrepare != nil {
+			var err error
+			if res, err = h.TriagePrepare(ctx, d.DB.Pool, wid, need.tid); err != nil {
+				return err
+			}
+		}
+		a.triage[need.tid] = res
+	}
+	return nil
+}
+
+// RunTrigger applies SLA policies, automations, auto-assignment and the new ticket and
+// reply notifications for one ticket change, in one transaction. Model calls (auto-triage,
+// ai_decide, ai_triage) run outside it: a transaction that meets a question it has no
+// answer for rolls back, the answer is fetched, and the run starts again with it.
+func RunTrigger(ctx context.Context, d *deps.Deps, a jobs.TicketTriggerArgs) error {
 	// A suspended workspace runs no automations (contracts/admin.md).
 	if suspended, err := domain.WorkspaceSuspended(ctx, d.DB.Pool, a.WorkspaceID); err != nil || suspended {
 		return err
 	}
-	// Auto-triage runs first, outside the trigger transaction (it calls a model), so the
-	// ticket_created automations see its tags, priority and sentiment.
+	// Auto-triage runs first, once, outside the trigger transaction (it calls a model), so
+	// the ticket_created automations see its tags, priority and sentiment.
 	if h := hd.GetAIHooks(); a.Trigger == jobs.TriggerTicketCreated && h != nil && h.AutoTriage != nil {
 		if err := h.AutoTriage(ctx, a.WorkspaceID, a.TicketID); err != nil {
 			d.Log.Warn("auto triage skipped", "ticket_id", a.TicketID, "err", err)
 		}
 	}
+	answers, rounds := newAIAnswers(), 0
+	for {
+		err := runTrigger(ctx, d, a, answers)
+		var need *needAI
+		switch {
+		case errors.As(err, &need):
+			if err := answers.fetch(ctx, d, a.WorkspaceID, need); err != nil {
+				return err
+			}
+			if rounds++; rounds >= maxAIRounds {
+				answers.final = true
+			}
+		case errors.Is(err, errCallTicketMoved):
+			// Answers were about the ticket the call was on.
+			answers, rounds = newAIAnswers(), 0
+		default:
+			return err
+		}
+	}
+}
+
+func runTrigger(ctx context.Context, d *deps.Deps, a jobs.TicketTriggerArgs, answers *aiAnswers) error {
 	return d.DB.Tx(ctx, func(tx pgx.Tx) error {
 		if a.Trigger == jobs.TriggerCallEnded && a.CallID != nil {
 			var current *uuid.UUID
@@ -74,8 +147,8 @@ func runTrigger(ctx context.Context, d *deps.Deps, a jobs.TicketTriggerArgs) err
 			}
 			a.TicketID = *current
 		}
-		// Runs for one ticket share an advisory lock, so each sees the previous run's writes
-		// while agents can keep editing during a model call.
+		// Runs for one ticket share an advisory lock, so each sees the previous run's writes.
+		// No model is called while it is held.
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('ticket_trigger:' || $1::text, 0))`, a.TicketID); err != nil {
 			return err
 		}
@@ -86,18 +159,31 @@ func runTrigger(ctx context.Context, d *deps.Deps, a jobs.TicketTriggerArgs) err
 		if err != nil {
 			return err
 		}
-		run := &triggerRun{d: d, tx: tx, wid: a.WorkspaceID, tid: a.TicketID, fired: map[uuid.UUID]bool{}, messageID: a.MessageID, callID: a.CallID}
+		run := &triggerRun{d: d, tx: tx, wid: a.WorkspaceID, tid: a.TicketID, fired: map[uuid.UUID]bool{}, messageID: a.MessageID, callID: a.CallID, ai: answers}
 
 		updated := func(field string) bool {
 			return a.Trigger == jobs.TriggerTicketUpdated && slices.Contains(a.Changes, field)
 		}
-		if a.Trigger == jobs.TriggerTicketCreated || updated("priority") || updated("team_id") {
-			if err := applySLA(ctx, tx, a.WorkspaceID, a.TicketID, a.Trigger == jobs.TriggerTicketCreated); err != nil {
+		if a.Trigger == jobs.TriggerTicketCreated || a.Reopened || updated("priority") || updated("team_id") {
+			if err := applySLA(ctx, tx, a.WorkspaceID, a.TicketID); err != nil {
+				return err
+			}
+		}
+		// A status the message changed (a reply that reopened a ticket waiting on the
+		// customer) starts or stops the resolution clock.
+		if moved, err := slaClock(ctx, tx, a.WorkspaceID, a.TicketID, time.Now().UTC()); err != nil {
+			return err
+		} else if moved {
+			if err := domain.PublishTicketUpdated(ctx, tx, a.WorkspaceID, a.TicketID, []string{"sla"}); err != nil {
 				return err
 			}
 		}
 		if !t.Spam {
-			if err := run.automations(ctx, a.Trigger, a.MessageID, 0); err != nil {
+			changes := a.Changes
+			if a.Trigger == jobs.TriggerTicketUpdated && changes == nil {
+				changes = []string{} // queued without its changes: nothing is known to have changed
+			}
+			if err := run.automations(ctx, a.Trigger, a.MessageID, 0, changes); err != nil {
 				return err
 			}
 			if run.gone {
@@ -130,54 +216,6 @@ func runTrigger(ctx context.Context, d *deps.Deps, a jobs.TicketTriggerArgs) err
 	})
 }
 
-// applySLA picks the first enabled policy, by position, for the ticket's priority (or any
-// priority) and its team (or any team), and sets the due dates from the ticket's creation.
-// Business hours are the team's own, else the workspace's.
-func applySLA(ctx context.Context, tx pgx.Tx, wid, tid uuid.UUID, created bool) error {
-	var priority string
-	var createdAt time.Time
-	var current, team *uuid.UUID
-	if err := tx.QueryRow(ctx, `SELECT priority, created_at, sla_policy_id, team_id FROM tickets WHERE workspace_id = $1 AND id = $2 FOR UPDATE`,
-		wid, tid).Scan(&priority, &createdAt, &current, &team); err != nil {
-		return err
-	}
-	var policyID *uuid.UUID
-	var frMin, resMin int
-	var inHours bool
-	err := tx.QueryRow(ctx, `SELECT id, first_response_minutes, resolution_minutes, business_hours FROM sla_policies
-		WHERE workspace_id = $1 AND enabled AND (priority = $2 OR priority IS NULL) AND (team_id = $3 OR team_id IS NULL)
-		ORDER BY position, (priority IS NULL), (team_id IS NULL), created_at LIMIT 1`, wid, priority, team).Scan(&policyID, &frMin, &resMin, &inHours)
-	if err != nil && !db.IsNotFound(err) {
-		return err
-	}
-	if policyID == nil && current == nil {
-		return nil
-	}
-	if policyID == nil {
-		_, err = tx.Exec(ctx, `UPDATE tickets SET sla_policy_id = NULL, first_response_due_at = NULL, resolution_due_at = NULL,
-			sla_first_response_breached_at = NULL, sla_resolution_breached_at = NULL, updated_at = now()
-			WHERE workspace_id = $1 AND id = $2`, wid, tid)
-	} else {
-		fr := createdAt.Add(time.Duration(frMin) * time.Minute)
-		res := createdAt.Add(time.Duration(resMin) * time.Minute)
-		if inHours {
-			bh, loc, err := hd.HoursFor(ctx, tx, wid, team)
-			if err != nil {
-				return err
-			}
-			fr, res = bh.AddBusinessMinutes(createdAt, frMin, loc), bh.AddBusinessMinutes(createdAt, resMin, loc)
-		}
-		_, err = tx.Exec(ctx, `UPDATE tickets SET sla_policy_id = $3, first_response_due_at = $4, resolution_due_at = $5,
-			sla_first_response_breached_at = CASE WHEN $4 > now() THEN NULL ELSE sla_first_response_breached_at END,
-			sla_resolution_breached_at = CASE WHEN $5 > now() THEN NULL ELSE sla_resolution_breached_at END,
-			updated_at = now() WHERE workspace_id = $1 AND id = $2`, wid, tid, *policyID, fr, res)
-	}
-	if err != nil {
-		return err
-	}
-	return domain.PublishTicketUpdated(ctx, tx, wid, tid, []string{"sla"})
-}
-
 type automation struct {
 	ID         uuid.UUID
 	Name       string
@@ -192,9 +230,8 @@ type triggerRun struct {
 	tid   uuid.UUID
 	fired map[uuid.UUID]bool
 	defs  map[string]domain.FieldDefs
-	// decided caches ai_decide answers by question for the whole run (one call per run).
-	decided map[string]float64
-	asked   map[string]bool
+	// ai holds the model's answers, asked outside the transaction (RunTrigger).
+	ai *aiAnswers
 	// teamMoved is set when an automation changed the ticket's team.
 	teamMoved bool
 	// messageID is the message the run is about, if any.
@@ -208,8 +245,11 @@ type triggerRun struct {
 	gone bool
 }
 
-// automations evaluates the enabled automations for trigger in position order.
-func (r *triggerRun) automations(ctx context.Context, trigger string, messageID *uuid.UUID, depth int) error {
+// automations evaluates the enabled automations for trigger in position order. On
+// ticket_updated, changes are the fields the update changed, and an automation runs only
+// when one of its conditions is on one of them (hd.UpdateRelevant): an edit that leaves its
+// fields alone does not run it again.
+func (r *triggerRun) automations(ctx context.Context, trigger string, messageID *uuid.UUID, depth int, changes []string) error {
 	if depth > MaxAutomationDepth {
 		return nil
 	}
@@ -228,10 +268,17 @@ func (r *triggerRun) automations(ctx context.Context, trigger string, messageID 
 		_ = json.Unmarshal(acts, &a.Actions)
 		return a, nil
 	})
-	if err != nil || len(list) == 0 {
+	if err != nil {
 		return err
 	}
-	if err := r.decide(ctx, list); err != nil {
+	onUpdate := trigger == jobs.TriggerTicketUpdated
+	if onUpdate {
+		list = slices.DeleteFunc(list, func(a automation) bool { return !hd.UpdateRelevant(a.Conditions, changes) })
+	}
+	if len(list) == 0 {
+		return nil
+	}
+	if err := r.decide(list); err != nil {
 		return err
 	}
 	if r.callID != nil {
@@ -247,23 +294,29 @@ func (r *triggerRun) automations(ctx context.Context, trigger string, messageID 
 		}
 	}
 	var changed []string
+	// The facts are read again only after an automation acted on the ticket.
+	var f *facts
 	for _, a := range list {
 		if r.fired[a.ID] {
 			continue
 		}
-		facts, err := r.facts(ctx, messageID)
-		if err != nil {
-			return err
+		if f == nil {
+			got, err := r.facts(ctx, messageID)
+			if err != nil {
+				return err
+			}
+			got.decided, got.changes, got.onUpdate = r.ai.decided, changes, onUpdate
+			f = &got
 		}
-		facts.decided = r.decided
-		if facts.spam || !matchAll(a.Conditions, facts) {
+		if f.spam || !matchAll(a.Conditions, *f) {
 			continue
 		}
 		r.fired[a.ID] = true
-		c, err := r.apply(ctx, a, facts)
+		c, err := r.apply(ctx, a, *f)
 		if err != nil {
 			return err
 		}
+		f = nil
 		changed = append(changed, c...)
 		if _, err := r.tx.Exec(ctx, `UPDATE automations SET run_count = run_count + 1 WHERE workspace_id = $1 AND id = $2`, r.wid, a.ID); err != nil {
 			return err
@@ -279,11 +332,11 @@ func (r *triggerRun) automations(ctx context.Context, trigger string, messageID 
 		r.teamMoved = true
 	}
 	if slices.Contains(changed, "priority") || slices.Contains(changed, "team_id") {
-		if err := applySLA(ctx, r.tx, r.wid, r.tid, false); err != nil {
+		if err := applySLA(ctx, r.tx, r.wid, r.tid); err != nil {
 			return err
 		}
 	}
-	return r.automations(ctx, jobs.TriggerTicketUpdated, messageID, depth+1)
+	return r.automations(ctx, jobs.TriggerTicketUpdated, messageID, depth+1, changed)
 }
 
 // facts is what conditions are evaluated against.
@@ -292,11 +345,15 @@ type facts struct {
 	sentiment, severity                                            string
 	assigneeID, teamID, brandID, widgetID, receivedAt              string
 	decided                                                        map[string]float64
-	tags                                                           []string
-	spam                                                           bool
-	contactEmail                                                   *string
-	fields, contactFields                                          map[string]any
-	defs                                                           map[string]domain.FieldDefs // by entity
+	// changes are the fields the update changed, on ticket_updated (onUpdate): what the
+	// changed op reads.
+	changes               []string
+	onUpdate              bool
+	tags                  []string
+	spam                  bool
+	contactEmail          *string
+	fields, contactFields map[string]any
+	defs                  map[string]domain.FieldDefs // by entity
 	// call is the call of a call_ended run; nil otherwise, and then call conditions fail.
 	call *callFacts
 }
@@ -396,6 +453,10 @@ func matchAll(cs []hd.Condition, f facts) bool {
 }
 
 func match(c hd.Condition, f facts) bool {
+	if c.Op == hd.OpChanged {
+		change, ok := hd.ConditionChange(c.Field)
+		return ok && f.onUpdate && slices.Contains(f.changes, change)
+	}
 	if entity, key, ok := hd.ConditionFieldKey(c.Field); ok {
 		def, ok := f.defs[entity][key]
 		if !ok {
@@ -629,15 +690,28 @@ func (r *triggerRun) apply(ctx context.Context, a automation, f facts) ([]string
 				return nil, fmt.Errorf("automation %s: run_procedure: %w", a.ID, err)
 			}
 		case "ai_triage":
-			// The hook skips (nil, nil) when AI is off, out of AI balance or unavailable; an
-			// error is a database failure of this transaction.
-			if h := hd.GetAIHooks(); h != nil && h.Triage != nil {
-				c, err := h.Triage(ctx, r.tx, r.wid, r.tid)
-				if err != nil {
-					return nil, fmt.Errorf("automation %s: ai_triage: %w", a.ID, err)
-				}
-				changed = append(changed, c...)
+			// The model triages outside the transaction (needAI, RunTrigger), once per run;
+			// here the result is applied to the ticket as it is now. A nil result is a
+			// skipped triage (AI off, out of AI balance or unavailable).
+			h := hd.GetAIHooks()
+			if h == nil || h.TriagePrepare == nil || h.TriageApply == nil {
+				continue
 			}
+			res, asked := r.ai.triage[r.tid]
+			if !asked {
+				if r.ai.final {
+					continue
+				}
+				return nil, &needAI{tid: r.tid, triage: true}
+			}
+			if res == nil {
+				continue
+			}
+			c, err := h.TriageApply(ctx, r.tx, r.wid, r.tid, res)
+			if err != nil {
+				return nil, fmt.Errorf("automation %s: ai_triage: %w", a.ID, err)
+			}
+			changed = append(changed, c...)
 		}
 	}
 	if !patch.empty() {
@@ -706,7 +780,7 @@ func (r *triggerRun) addMessage(ctx context.Context, act hd.Action, f facts) err
 		var mbEmail, mbName *string
 		_ = r.tx.QueryRow(ctx, `SELECT mb.email, mb.display_name FROM tickets t JOIN mailboxes mb ON mb.id = t.mailbox_id
 			WHERE t.workspace_id = $1 AND t.id = $2`, r.wid, r.tid).Scan(&mbEmail, &mbName)
-		ok, err := r.mayAutoReply(ctx)
+		ok, err := r.mayAutoReply(ctx, true)
 		if err != nil || !ok {
 			return err
 		}
@@ -715,6 +789,11 @@ func (r *triggerRun) addMessage(ctx context.Context, act hd.Action, f facts) err
 		}
 		nm.FromEmail, nm.FromName = str(mbEmail), str(mbName)
 		nm.DeliveryStatus = "pending"
+	} else if kind == "reply" {
+		// A chat (or any other channel's) reply counts toward the same caps.
+		if ok, err := r.mayAutoReply(ctx, false); err != nil || !ok {
+			return err
+		}
 	}
 	_, err := domain.AddMessage(ctx, r.tx, r.d.Jobs, nm)
 	if errors.Is(err, domain.ErrCannotSend) {
@@ -725,32 +804,35 @@ func (r *triggerRun) addMessage(ctx context.Context, act hd.Action, f facts) err
 
 // Automation replies by email are automatic mail (Auto-Submitted: auto-generated). They
 // never answer mail nothing automatic may answer (messages.no_auto_reply: automatic, bulk
-// or list mail, a workspace's own address, a sender that failed authentication), and at
-// most automationRepliesPerTicket go to one ticket, and automationRepliesPerContact to one
-// contact's tickets, per automationReplyWindow, so two automatic systems cannot keep
-// answering each other.
+// or list mail, a workspace's own address, a sender that failed authentication). On every
+// channel, chat included, at most automationRepliesPerTicket automation replies go to one
+// ticket, and automationRepliesPerContact to one contact's tickets, per
+// automationReplyWindow, so two automatic systems cannot keep answering each other.
 const (
 	automationRepliesPerTicket  = 3
 	automationRepliesPerContact = 10
 	automationReplyWindow       = time.Hour
 )
 
-// mayAutoReply decides whether an automation may send an email reply on the run's ticket,
-// judged by the message the run is about, else the ticket's latest inbound message.
-func (r *triggerRun) mayAutoReply(ctx context.Context) (bool, error) {
-	var noAuto bool
-	err := r.tx.QueryRow(ctx, `SELECT no_auto_reply OR auth_failed FROM messages
-		WHERE workspace_id = $1 AND ticket_id = $2 AND direction = 'inbound' AND kind = 'reply'
-		ORDER BY COALESCE(id = $3, false) DESC, created_at DESC LIMIT 1`, r.wid, r.tid, r.messageID).Scan(&noAuto)
-	if err != nil && !db.IsNotFound(err) {
-		return false, err
-	}
-	if noAuto {
-		r.d.Log.Info("automation reply skipped", "ticket_id", r.tid, "reason", "automatic_mail")
-		return false, nil
+// mayAutoReply decides whether an automation may send a reply on the run's ticket: under
+// the caps, and, by email, not to automatic mail, judged by the message the run is about,
+// else the ticket's latest inbound message.
+func (r *triggerRun) mayAutoReply(ctx context.Context, email bool) (bool, error) {
+	if email {
+		var noAuto bool
+		err := r.tx.QueryRow(ctx, `SELECT no_auto_reply OR auth_failed FROM messages
+			WHERE workspace_id = $1 AND ticket_id = $2 AND direction = 'inbound' AND kind = 'reply'
+			ORDER BY COALESCE(id = $3, false) DESC, created_at DESC LIMIT 1`, r.wid, r.tid, r.messageID).Scan(&noAuto)
+		if err != nil && !db.IsNotFound(err) {
+			return false, err
+		}
+		if noAuto {
+			r.d.Log.Info("automation reply skipped", "ticket_id", r.tid, "reason", "automatic_mail")
+			return false, nil
+		}
 	}
 	var perTicket, perContact int
-	err = r.tx.QueryRow(ctx, `SELECT count(*) FILTER (WHERE m.ticket_id = $2), count(*)
+	err := r.tx.QueryRow(ctx, `SELECT count(*) FILTER (WHERE m.ticket_id = $2), count(*)
 		FROM messages m JOIN tickets t ON t.id = m.ticket_id AND t.workspace_id = m.workspace_id
 		WHERE m.workspace_id = $1 AND m.author_type = 'system' AND m.kind = 'reply' AND m.direction = 'outbound'
 		AND m.created_at > now() - $3::interval
@@ -837,7 +919,7 @@ func autoAssign(ctx context.Context, tx pgx.Tx, d *deps.Deps, wid, tid uuid.UUID
 		}
 	}
 	if mode == AssignNone {
-		return nil
+		return setAssignPending(ctx, tx, wid, tid, false)
 	}
 	pool := team
 	if pool == nil && mailbox != nil {
@@ -848,10 +930,26 @@ func autoAssign(ctx context.Context, tx pgx.Tx, d *deps.Deps, wid, tid uuid.UUID
 		pool = mbTeam
 	}
 	next, err := PickAssignee(ctx, tx, wid, pool, mode, requiredSkillIDs)
-	if err != nil || next == nil {
+	if err != nil {
 		return err
 	}
+	if next == nil {
+		return setAssignPending(ctx, tx, wid, tid, true)
+	}
 	_, err = applyPatch(ctx, tx, d, wid, tid, actor, Patch{Assignee: Opt[uuid.UUID]{Set: true, Value: *next}}, applyOpts{})
+	return err
+}
+
+// setAssignPending marks a ticket auto-assignment found nobody eligible for, so the backlog
+// job (AssignBacklog) assigns it once someone is; waiting false clears the mark (the rule
+// that applies assigns nobody). An assignment clears it too (applyPatch).
+func setAssignPending(ctx context.Context, tx pgx.Tx, wid, tid uuid.UUID, waiting bool) error {
+	if waiting {
+		_, err := tx.Exec(ctx, `UPDATE tickets SET assign_pending_since = COALESCE(assign_pending_since, now())
+			WHERE workspace_id = $1 AND id = $2 AND assignee_id IS NULL`, wid, tid)
+		return err
+	}
+	_, err := tx.Exec(ctx, `UPDATE tickets SET assign_pending_since = NULL WHERE workspace_id = $1 AND id = $2 AND assign_pending_since IS NOT NULL`, wid, tid)
 	return err
 }
 
@@ -1211,16 +1309,20 @@ func notifyThreadReplied(ctx context.Context, tx pgx.Tx, wid, tid uuid.UUID, mes
 	return hd.Notify(ctx, tx, wid, *assignee, hd.NotifyThreadReplied, &tid, data)
 }
 
-// decide asks the decision engine every ai_decide question of list not answered yet in
-// this run, in one call. Unanswered questions stay absent, so their conditions fail.
-func (r *triggerRun) decide(ctx context.Context, list []automation) error {
+// decide makes sure every ai_decide question of list was asked in this run: a question not
+// asked yet stops the transaction (needAI), so RunTrigger asks it outside and runs again.
+// Unanswered questions stay absent, so their conditions fail.
+func (r *triggerRun) decide(list []automation) error {
+	if r.ai == nil {
+		r.ai = newAIAnswers()
+	}
 	var questions []string
 	for _, a := range list {
 		if r.fired[a.ID] {
 			continue
 		}
 		for _, c := range a.Conditions {
-			if c.Field == "ai_decide" && c.Question != "" && !r.asked[c.Question] && !slices.Contains(questions, c.Question) {
+			if c.Field == "ai_decide" && c.Question != "" && !r.ai.asked[c.Question] && !slices.Contains(questions, c.Question) {
 				questions = append(questions, c.Question)
 			}
 		}
@@ -1228,22 +1330,11 @@ func (r *triggerRun) decide(ctx context.Context, list []automation) error {
 	if len(questions) == 0 {
 		return nil
 	}
-	if r.asked == nil {
-		r.asked, r.decided = map[string]bool{}, map[string]float64{}
-	}
-	for _, q := range questions {
-		r.asked[q] = true
-	}
-	h := hd.GetAIHooks()
-	if h == nil || h.Decide == nil {
+	if h := hd.GetAIHooks(); r.ai.final || h == nil || h.Decide == nil {
+		for _, q := range questions {
+			r.ai.asked[q] = true
+		}
 		return nil
 	}
-	got, err := h.Decide(ctx, r.tx, r.wid, r.tid, questions)
-	if err != nil {
-		return err
-	}
-	for q, p := range got {
-		r.decided[q] = p
-	}
-	return nil
+	return &needAI{tid: r.tid, questions: questions}
 }

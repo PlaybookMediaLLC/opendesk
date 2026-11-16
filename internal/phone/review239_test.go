@@ -3,7 +3,7 @@ package phone_test
 import (
 	"context"
 	"encoding/json"
-	"github.com/jackc/pgx/v5"
+	"github.com/useopendesk/opendesk/internal/db"
 	"github.com/useopendesk/opendesk/internal/helpdesk/hd"
 	"github.com/useopendesk/opendesk/internal/helpdesk/hdtest"
 	"strings"
@@ -270,7 +270,7 @@ func TestReview239MergeWhileCallDecisionWaits(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
 	prev := hd.GetAIHooks()
 	defer hd.SetAIHooks(prev)
-	hd.SetAIHooks(&hd.AIHooks{Decide: func(ctx context.Context, tx pgx.Tx, wid, tid uuid.UUID, q []string) (map[string]float64, error) {
+	hd.SetAIHooks(&hd.AIHooks{Decide: func(ctx context.Context, _ db.Querier, wid, tid uuid.UUID, q []string) (map[string]float64, error) {
 		if tid == src.ID {
 			close(entered)
 			select {

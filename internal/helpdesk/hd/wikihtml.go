@@ -36,6 +36,8 @@ var (
 		"contact": regexp.MustCompile(`^/contacts/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`),
 	}
 	relValue = regexp.MustCompile(`^[a-z ]{1,64}$`)
+	// mentionNumber is the "#42" a ticket mention's text starts with.
+	mentionNumber = regexp.MustCompile(`^\s*#([0-9]{1,18})`)
 	// A button block (contracts/wiki.md "Blocks"): what it says and what it does.
 	buttonLabel  = regexp.MustCompile(`^[^\x00-\x1f\x7f]{1,100}$`)
 	buttonAction = regexp.MustCompile(`^(template|todo|link|row)$`)
@@ -132,8 +134,10 @@ func SanitizeWiki(raw string) string {
 // mentionLinks reduces each link to a ticket or a contact in sanitized HTML to what the
 // app draws it from: its type, the record's id and the app's route for it
 // (`<a data-type="ticket" data-id="<uuid>" href="/tickets/<number>">`), with the policy's
-// rel. Any other href or attribute goes; without an id it is a plain link. Everything
-// else is copied as it is.
+// rel. Any other href or attribute goes; without an id it is a plain link. A ticket
+// mention's text is its number alone ("#42"): the app draws the subject live for a reader
+// who may see the ticket, so what is stored, searched, exported or published never holds
+// it (contracts/wiki.md "Mentions"). Everything else is copied as it is.
 func mentionLinks(clean string) string {
 	if !strings.Contains(clean, `data-type="ticket"`) && !strings.Contains(clean, `data-type="contact"`) {
 		return clean
@@ -181,5 +185,47 @@ func mentionLinks(clean string) string {
 			}
 		}
 		b.WriteString(">")
+		if kind == "ticket" && uuidAttr.MatchString(id) {
+			number := ""
+			if shape.MatchString(href) {
+				number = strings.TrimPrefix(href, "/tickets/")
+			}
+			// The rest of the link, up to its end, is replaced by the number.
+			var text strings.Builder
+			depth := 1
+			for depth > 0 {
+				tt := z.Next()
+				if tt == xhtml.ErrorToken {
+					break
+				}
+				switch {
+				case tt == xhtml.TextToken:
+					text.Write(z.Text())
+				case tt == xhtml.StartTagToken && tagName(z) == "a":
+					depth++
+				case tt == xhtml.EndTagToken && tagName(z) == "a":
+					depth--
+				}
+			}
+			if number == "" {
+				if m := mentionNumber.FindStringSubmatch(text.String()); m != nil {
+					number = m[1]
+				}
+			}
+			b.WriteString("#" + number + "</a>")
+			if depth > 0 {
+				return b.String()
+			}
+		}
 	}
+}
+
+// TicketMentionsByNumber brings each ticket mention of stored wiki HTML to its number alone,
+// as SanitizeWiki stores it (mentionLinks), for text read from a body saved before it did.
+func TicketMentionsByNumber(stored string) string { return mentionLinks(stored) }
+
+// tagName is the lower-case name of the tokenizer's current tag.
+func tagName(z *xhtml.Tokenizer) string {
+	name, _ := z.TagName()
+	return string(name)
 }

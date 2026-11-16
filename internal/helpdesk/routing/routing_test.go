@@ -379,13 +379,21 @@ func TestResolve(t *testing.T) {
 	if len(res.Steps) != 2 || res.Steps[0].Matched != Unknown || res.Steps[1].Matched != true {
 		t.Fatalf("steps %+v", res.Steps)
 	}
-	if err := Count(ctx, q, match); err != nil {
+	if err := Count(ctx, q, w.ws.ID, match); err != nil {
 		t.Fatal(err)
 	}
 	var runs int64
 	w.e.Scalar(`SELECT run_count FROM routing_rules WHERE id = $1`, &runs, match)
 	if runs != 1 {
 		t.Fatalf("run_count %d", runs)
+	}
+	// Another workspace's id counts nothing.
+	if err := Count(ctx, q, ids.New(), match); err != nil {
+		t.Fatal(err)
+	}
+	w.e.Scalar(`SELECT run_count FROM routing_rules WHERE id = $1`, &runs, match)
+	if runs != 1 {
+		t.Fatalf("run_count after another workspace's count %d", runs)
 	}
 
 	// Contact fields.

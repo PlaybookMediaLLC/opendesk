@@ -135,6 +135,9 @@ type TicketTriggerArgs struct {
 	Changes     []string   `json:"changes,omitempty"`
 	// CallID is the phone call a call_ended trigger is about (phone_calls.id).
 	CallID *uuid.UUID `json:"call_id,omitempty"`
+	// Reopened: the message this run is about opened a solved ticket again, which starts a
+	// new SLA cycle (contracts/api.md "SLA").
+	Reopened bool `json:"reopened,omitempty"`
 }
 
 func (TicketTriggerArgs) Kind() string { return "helpdesk.ticket_trigger" }

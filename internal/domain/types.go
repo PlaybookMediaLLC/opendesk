@@ -84,11 +84,22 @@ type TagGroup struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// TicketSLA is the ticket's current SLA cycle (contracts/api.md "SLA").
 type TicketSLA struct {
-	PolicyID           uuid.UUID  `json:"policy_id"`
+	PolicyID uuid.UUID `json:"policy_id"`
+	// FirstResponseDueAt is the cycle's reply target: the first response of a new ticket,
+	// the team's first reply after a reopen.
 	FirstResponseDueAt *time.Time `json:"first_response_due_at"`
 	ResolutionDueAt    *time.Time `json:"resolution_due_at"`
-	Breached           bool       `json:"breached"`
+	// StartedAt is when the cycle started: the ticket's creation, else its last reopen.
+	StartedAt *time.Time `json:"started_at"`
+	// PausedAt is set while the resolution clock stands still (pending, on hold).
+	PausedAt                *time.Time `json:"paused_at"`
+	FirstResponseBreachedAt *time.Time `json:"first_response_breached_at"`
+	ResolutionBreachedAt    *time.Time `json:"resolution_breached_at"`
+	// ReplyPending: the team has yet to reply in this cycle, so the reply target applies.
+	ReplyPending bool `json:"reply_pending"`
+	Breached     bool `json:"breached"`
 }
 
 type CSAT struct {

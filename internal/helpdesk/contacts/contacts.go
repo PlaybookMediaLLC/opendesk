@@ -336,10 +336,12 @@ func registerContacts(d *deps.Deps, api huma.API) {
 				}
 				// The contacts_customer_identity trigger ends customer credentials, sessions
 				// and reset links when the email changes or the contact is blocked.
+				// A member who sets the address confirms it (chat follow-up; contracts/teams.md).
 				if _, err := tx.Exec(ctx, `UPDATE contacts SET email = $3, name = $4, phone = $5, company_id = $6,
-					external_id = $7, notes = $8, custom = $9, blocked = $10, fields = $11, updated_at = now() WHERE workspace_id = $1 AND id = $2`,
+					external_id = $7, notes = $8, custom = $9, blocked = $10, fields = $11,
+					email_unconfirmed = email_unconfirmed AND NOT $12, updated_at = now() WHERE workspace_id = $1 AND id = $2`,
 					p.WorkspaceID, id, row.Email, row.Name, row.Phone, row.CompanyID, row.ExternalID,
-					row.Notes, row.Custom, row.Blocked, row.Fields); err != nil {
+					row.Notes, row.Custom, row.Blocked, row.Fields, in.Body.Email.Set); err != nil {
 					return uniqueErr(err)
 				}
 				if prefix, err := pictureFromURL(ctx, d, tx, p.WorkspaceID, id, row.PictureURL); err != nil {

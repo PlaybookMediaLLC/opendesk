@@ -68,19 +68,26 @@ func decodePortalCursor(value string) (portalCursor, error) {
 func (s *service) registerTickets(api huma.API) {
 	const prefix = "/v1/customer/portal/tickets"
 	huma.Register(api, s.operation("customer-portal-list-tickets", http.MethodGet, prefix, "List your support requests", false),
-		func(ctx context.Context, in *struct{ httpx.ListParams }) (*struct{ Body httpx.Page[customerTicket] }, error) {
+		func(ctx context.Context, in *struct {
+			PortalBrandParam
+			httpx.ListParams
+		}) (*struct{ Body httpx.Page[customerTicket] }, error) {
 			p, err := auth.RequireCustomer(ctx)
 			if err != nil {
 				return nil, httpx.Wrap(err)
+			}
+			brand, err := s.portalBrand(ctx, p, in.Slug)
+			if err != nil {
+				return nil, err
 			}
 			c, err := decodePortalCursor(in.Cursor)
 			if err != nil {
 				return nil, err
 			}
 			rows, err := s.d.DB.Pool.Query(ctx, `SELECT id,number,subject,status,created_at,updated_at FROM tickets
-    WHERE workspace_id=$1 AND contact_id=$2 AND deleted_at IS NULL AND NOT spam
+    WHERE workspace_id=$1 AND contact_id=$2 AND brand_id=$7 AND deleted_at IS NULL AND NOT spam
     AND ($3 OR (updated_at,id)<($4,$5)) ORDER BY updated_at DESC,id DESC LIMIT $6`,
-				p.WorkspaceID, p.ContactID, in.Cursor == "", c.At, c.ID, in.Limit+1)
+				p.WorkspaceID, p.ContactID, in.Cursor == "", c.At, c.ID, in.Limit+1, brand)
 			if err != nil {
 				return nil, httpx.Wrap(err)
 			}
@@ -94,12 +101,17 @@ func (s *service) registerTickets(api huma.API) {
 	huma.Register(api, s.operation("customer-portal-get-ticket", http.MethodGet, prefix+"/{id}", "Read your support request", false),
 		func(ctx context.Context, in *struct {
 			ID string `path:"id"`
+			PortalBrandParam
 		}) (*struct{ Body customerTicket }, error) {
 			p, err := auth.RequireCustomer(ctx)
 			if err != nil {
 				return nil, httpx.Wrap(err)
 			}
-			t, err := loadCustomerTicket(ctx, s.d.DB.Pool, p, in.ID, false)
+			brand, err := s.portalBrand(ctx, p, in.Slug)
+			if err != nil {
+				return nil, err
+			}
+			t, err := loadCustomerTicket(ctx, s.d.DB.Pool, p, brand, in.ID, false)
 			if err != nil {
 				return nil, httpx.Wrap(err)
 			}
@@ -108,13 +120,18 @@ func (s *service) registerTickets(api huma.API) {
 	huma.Register(api, s.operation("customer-portal-list-messages", http.MethodGet, prefix+"/{id}/messages", "Read your public conversation", false),
 		func(ctx context.Context, in *struct {
 			ID string `path:"id"`
+			PortalBrandParam
 			httpx.ListParams
 		}) (*struct{ Body httpx.Page[customerMessage] }, error) {
 			p, err := auth.RequireCustomer(ctx)
 			if err != nil {
 				return nil, httpx.Wrap(err)
 			}
-			t, err := loadCustomerTicket(ctx, s.d.DB.Pool, p, in.ID, false)
+			brand, err := s.portalBrand(ctx, p, in.Slug)
+			if err != nil {
+				return nil, err
+			}
+			t, err := loadCustomerTicket(ctx, s.d.DB.Pool, p, brand, in.ID, false)
 			if err != nil {
 				return nil, httpx.Wrap(err)
 			}
@@ -226,7 +243,7 @@ func (s *service) registerTickets(api huma.API) {
 				return err
 			}
 			if rule := res.RuleID(); rule != nil {
-				if err := routing.Count(ctx, tx, *rule); err != nil {
+				if err := routing.Count(ctx, tx, p.WorkspaceID, *rule); err != nil {
 					return err
 				}
 			}
@@ -248,7 +265,8 @@ func (s *service) registerTickets(api huma.API) {
 	op := s.operation("customer-portal-post-message", http.MethodPost, prefix+"/{id}/messages", "Reply to your support request", false)
 	op.DefaultStatus = http.StatusCreated
 	huma.Register(api, op, func(ctx context.Context, in *struct {
-		ID   string `path:"id"`
+		ID string `path:"id"`
+		PortalBrandParam
 		Body struct {
 			Body string `json:"body" minLength:"1" maxLength:"10000"`
 		}
@@ -257,6 +275,10 @@ func (s *service) registerTickets(api huma.API) {
 		if err != nil {
 			return nil, httpx.Wrap(err)
 		}
+		brand, err := s.portalBrand(ctx, p, in.Slug)
+		if err != nil {
+			return nil, err
+		}
 		text := strings.TrimSpace(in.Body.Body)
 		if text == "" {
 			return nil, httpx.E(http.StatusUnprocessableEntity, "validation_failed", "Write a reply first.")
@@ -264,7 +286,7 @@ func (s *service) registerTickets(api huma.API) {
 		var message customerMessage
 		err = s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
 			// Hold ownership stable until AddMessage and its events/jobs commit.
-			t, err := loadCustomerTicket(ctx, tx, p, in.ID, true)
+			t, err := loadCustomerTicket(ctx, tx, p, brand, in.ID, true)
 			if err != nil {
 				return err
 			}
@@ -290,17 +312,37 @@ func scanCustomerTicket(row pgx.Row) (customerTicket, error) {
 	err := row.Scan(&t.ID, &t.Number, &t.Subject, &t.Status, &t.CreatedAt, &t.UpdatedAt)
 	return t, err
 }
-func loadCustomerTicket(ctx context.Context, q db.Querier, p *auth.Principal, value string, lock bool) (customerTicket, error) {
+
+// PortalBrandParam names the portal being viewed (contracts/customer-portal.md): the
+// customer reads and answers only that brand's tickets.
+type PortalBrandParam struct {
+	Slug string `query:"workspace_slug" required:"true" minLength:"1" maxLength:"40" doc:"The portal's brand slug: only that brand's requests are listed, read and answered"`
+}
+
+// portalBrand is the brand of the portal slug names, which must be a help center of the
+// customer's own workspace (404 otherwise).
+func (s *service) portalBrand(ctx context.Context, p *auth.Principal, slug string) (uuid.UUID, error) {
+	hc, err := helpCenter(ctx, s.d, slug)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if hc.WorkspaceID != p.WorkspaceID {
+		return uuid.Nil, httpx.NotFound("Help center")
+	}
+	return hc.BrandID, nil
+}
+
+func loadCustomerTicket(ctx context.Context, q db.Querier, p *auth.Principal, brand uuid.UUID, value string, lock bool) (customerTicket, error) {
 	id, ok := ids.Parse(value)
 	if !ok {
 		return customerTicket{}, httpx.NotFound("Ticket")
 	}
 	query := `SELECT id,number,subject,status,created_at,updated_at FROM tickets
-  WHERE workspace_id=$1 AND contact_id=$2 AND id=$3 AND deleted_at IS NULL AND NOT spam`
+  WHERE workspace_id=$1 AND contact_id=$2 AND id=$3 AND brand_id=$4 AND deleted_at IS NULL AND NOT spam`
 	if lock {
 		query += " FOR UPDATE"
 	}
-	t, err := scanCustomerTicket(q.QueryRow(ctx, query, p.WorkspaceID, p.ContactID, id))
+	t, err := scanCustomerTicket(q.QueryRow(ctx, query, p.WorkspaceID, p.ContactID, id, brand))
 	if db.IsNotFound(err) {
 		return t, httpx.NotFound("Ticket")
 	}

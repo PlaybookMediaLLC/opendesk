@@ -106,7 +106,7 @@ type TicketSkill = { id: string; name: string }; // a workspace skill required b
 type Ticket = {
   id: string; number: number; alias: string | null /* optional, workspace-unique reference; not an authorization token */; subject: string; status: TicketStatus; priority: Priority; severity: Severity | null; channel: Channel;
   mailbox_id: string | null; contact: ContactRef | null; assignee: UserRef | null; team_id: string | null;
-  tags: TagRef[]; required_skills: TicketSkill[] /* fixed when the ticket is created; automatic assignment requires every one, while manual assignment remains available */; fields: FieldValues; sla: { policy_id: string; first_response_due_at: string | null; resolution_due_at: string | null; breached: boolean } | null;
+  tags: TagRef[]; required_skills: TicketSkill[] /* fixed when the ticket is created; automatic assignment requires every one, while manual assignment remains available */; fields: FieldValues; sla: { policy_id: string; first_response_due_at: string | null /* the cycle's reply target */; resolution_due_at: string | null; started_at: string /* the cycle's start: creation, else the last reopen */; paused_at: string | null /* the resolution clock stands still (pending, on hold) */; first_response_breached_at: string | null; resolution_breached_at: string | null; reply_pending: boolean /* the team has yet to reply in this cycle */; breached: boolean /* a breach recorded in this cycle (kept once solved), or a target that applies has passed */ } | null /* "SLA" below */;
   first_responded_at: string | null; solved_at: string | null; snoozed_until: string | null;
   last_message_at: string; last_customer_message_at: string | null; waiting_since: string | null /* the customer's first unanswered public message; null once anyone (or the AI agent) replied */; unanswered_count: number /* the customer's public messages since the last outbound public reply; 0 once replied */; last_message_preview: string;
   last_note: { id: string; preview: string /* the note's text, whitespace collapsed, up to 200 characters */; author: { type: "user" | "api"; name: string; user: UserRef | null }; created_at: string; edited_at: string | null } | null /* the newest internal note a member or an API key wrote on the ticket itself: never a side conversation's message, an automation's or Ollie's note, a deleted note or one sent as a reply. Read from the messages each time, so an edit, a deletion or a merge shows at once; a change publishes ticket.updated with last_note in changes. The team's alone: the widget, the customer portal and every public route leave it out */; message_count: number;
@@ -207,10 +207,11 @@ type Automation = { id: string; name: string; trigger: "ticket_created" | "custo
 type Condition = {
   field: "subject" | "body" | "from_email" | "channel" | "mailbox_id" | "priority" | "severity" | "status" | "tag" | "sentiment" | "ai_decide" | "assignee_id" | "team_id" | "brand_id" | "widget_id" | "received_at" | `field.${string}` | `contact.field.${string}`
     | "call_outcome" | "call_direction" | "call_missed_reason" | "call_time" | "call_line" | "call_tag"; // call_ended only (contracts/phone.md)
-  op: "contains" | "not_contains" | "equals" | "not_equals" | "eq" | "ne" | "gt" | "gte" | "lt" | "lte" | "any" | "all" | "none" | "set" | "not_set";
+  op: "contains" | "not_contains" | "equals" | "not_equals" | "eq" | "ne" | "gt" | "gte" | "lt" | "lte" | "any" | "all" | "none" | "set" | "not_set"
+    | "changed"; // ticket_updated only: holds when the field changed in the update (value unused, stored ""); below
   value: string; // up to 500 characters; any/none on a text field: a phrase list (below)
   question?: string; // ai_decide only: a yes/no question, 3..300 characters of plain text
-}; // subject, body, from_email, received_at, tag also take any ("contains any of") and none ("contains none of"): value holds phrases, one per line, each trimmed, empty lines dropped, stored that way; 1..100 phrases of up to 500 characters, 5000 characters in all; case-insensitive like contains; tag any holds when a label contains a phrase, tag none when no label does; other built-in fields refuse them. severity: equals/not_equals with a Severity or "none"; ai_decide: gt/lt with value a probability 0.01..0.99 (contracts/ai.md "Automations"); sentiment: equals/not_equals only; assignee_id, team_id, widget_id: equals/not_equals with an id of the workspace or "none"; brand_id: equals/not_equals with a brand id; received_at (the address the first email was written to): equals/not_equals/contains/any/none, case-insensitive; eq = equals, ne = not_equals. field.<key>: a ticket custom field, contact.field.<key>: the ticket contact's; ops per field type (below)
+}; // subject, body, from_email, received_at, tag also take any ("contains any of") and none ("contains none of"): value holds phrases, one per line, each trimmed, empty lines dropped, stored that way; 1..100 phrases of up to 500 characters, 5000 characters in all; case-insensitive like contains; tag any holds when a label contains a phrase, tag none when no label does; other built-in fields refuse them. severity: equals/not_equals with a Severity or "none"; ai_decide: gt/lt with value a probability 0.01..0.99 (contracts/ai.md "Automations"); sentiment: equals/not_equals only; assignee_id, team_id, widget_id: equals/not_equals with an id of the workspace or "none"; brand_id: equals/not_equals with a brand id; received_at (the address the first email was written to): equals/not_equals/contains/any/none, case-insensitive; eq = equals, ne = not_equals. field.<key>: a ticket custom field, contact.field.<key>: the ticket contact's; ops per field type (below). ticket_updated runs an automation only when the update changed a field one of its conditions is on (subject, priority, severity, status, tag (labels), sentiment (triage), assignee_id, team_id, brand_id, mailbox_id, field.<key> (any ticket custom field), contact.field.<key> (another contact)), so an edit that leaves its fields alone never runs it again; one without conditions runs on every update. A ticket_updated automation whose conditions are all on fields an update never changes (body, from_email, channel, widget_id, received_at, ai_decide) is 422. changed takes those same fields but contact.field.<key>, and only on ticket_updated (else 422); the in-process ticket_updated chain passes the fields the previous automations changed
 type Action = { type: "set_status" | "set_priority" | "set_severity" /* value Severity, or "" to clear */ | "assign_user" | "assign_replier" /* the agent who wrote the run's reply (an agent's new ticket starts with theirs); skipped when there is none: customer messages, notes, automation, API and AI replies, a run about no message */ | "assign_team" | "add_tag" | "remove_tag" | "send_reply" | "add_note" | "mark_spam" | "delete_ticket" /* soft-deletes the ticket; the run's later steps, automations and notifications skip it */ | "merge_into_open_ticket" /* ticket_created only; value the window in days, "1".."30", "" stores "7"; below */ | "ai_triage" | "set_field" | "set_reply_address" /* value a mailbox id of the ticket's brand; skipped when removed or of another brand */ | "run_procedure" /* value a procedure id (contracts/agent.md "Procedures"); Ollie runs it on the ticket in a job; not on ticket_updated (contracts/ai.md "Automations") */; value: string; field?: string /* set_field: the ticket field key */; same_subject?: boolean /* merge_into_open_ticket only, stored; default true */ }; // assign_team records routed {via: "automation"}
 type Mailbox = {
   id: string; name: string; email: string; display_name: string;
@@ -974,7 +975,9 @@ notification. With nothing to merge into, the other actions run as usual.
   fewest open and pending assigned tickets; ties go round robin).
 - Pool: the `lead`s and `member`s of the ticket's team, else of its mailbox's team, else every owner, admin and agent.
   Observers and viewers are never assigned. Eligible: `presence` is `online` and `open_tickets < max_open_tickets` (when set). With nobody eligible the ticket
-  stays unassigned.
+  stays unassigned and waits (`assign_pending_since`, not in the API): a job every minute gives each waiting `open`
+  ticket, oldest first, to someone eligible by the rule that applies to it then, as auto-assignment would (an agent who
+  comes online or drops under their cap). An assignment by anyone ends the wait, and so does a rule of `none`.
 - It runs in the ticket trigger after automations, on `ticket_created`, on `customer_replied` and when the team changes
   (by an agent, an automation or a deleted team's `move_to`), for tickets that are unassigned, not spam and not solved or closed. The `assigned` activity has actor `system` and `via` the mode.
 - Chats (`settings.chat_assign`, `chat_mode` in `/v1/assignment`; default `none`): with `round_robin` or
@@ -984,7 +987,7 @@ notification. With nothing to merge into, the other actions run as usual.
   `ai.widget_answers`), a chat is not assigned before the bot hands over, since an assignee stops the bot: it is assigned
   in `MarkAIHandoff` (the bot or the visitor asks for a person, or the bot's reply limit), or when the bot stays silent
   (its monthly cap, no AI balance, the provider failing); else at `ticket_created`. With nobody eligible it stays unassigned (and the hand-over notifies as below),
-  and is tried again on the visitor's next message (`customer_replied`). A chat with an assignee keeps them. The
+  and is tried again on the visitor's next message (`customer_replied`) and by the minute job above. A chat with an assignee keeps them. The
   `assigned` activity has actor `system`, `via` `chat` and `mode`; at a hand-over that assigned, only the assignee is
   notified (`assigned`, no `ai_handoff`). The web app shows an `assigned` notification whose `data.channel` is `chat`
   as a sticky pop-up on any page, with the live chat sound and the browser tab's title blinking, once per chat, until
@@ -1040,8 +1043,33 @@ TypeSafe, calibrated confidence), `llm` (the configured AI model's structured ou
 `BusinessHours` lives in `settings.business_hours`. Up to 3 ranges per day, `start < end`, on the quarter hour (`24:00` ends a
 day); up to 100 holidays (closed all day). An SLA policy with `business_hours: true` counts its minutes only while the
 workspace is open, in its timezone; with business hours off or an empty week it counts every minute. A ticket of a team with
-its own `business_hours` counts those (in the team's timezone, else the workspace's). Due dates are computed when the policy
-is applied (ticket created, priority or team changed).
+its own `business_hours` counts those (in the team's timezone, else the workspace's), and a team whose own hours are off
+counts every minute, whatever the workspace's (`business_hours: null` follows the workspace). Due dates are computed when the
+policy is applied ("SLA"); a later change of hours or holidays moves no due date already set.
+
+#### SLA
+
+A ticket's policy is the first enabled `/v1/sla-policies` entry, by `position`, for its priority (or any) and its team (or
+any). It sets two targets for the ticket's current **cycle**: a reply target (`first_response_due_at`, the policy's
+`first_response_minutes`) and a resolution target (`resolution_due_at`, `resolution_minutes`), both from the cycle's start
+(`started_at`) and in business hours when the policy says so.
+
+- Cycles: the first starts when the ticket is created. A solved ticket that opens again starts a new one then: a
+  customer's message that reopens it starts both targets from that message; a person or automation that reopens it
+  starts the resolution target (no reply is due, `reply_pending` false). Nothing of the last cycle carries over: its
+  breaches stay in the timeline and reports.
+- The reply target applies while `reply_pending`: until the first response in the first cycle (`first_responded_at`), else
+  until the team's first public reply in the cycle.
+- Pauses: while the ticket is `pending` or `on_hold` the resolution clock stands still (`paused_at`); when it runs again the
+  time it stood still (business minutes when the policy counts business hours) is added to the resolution target. The reply
+  target does not pause.
+- The policy is chosen again, and the targets recomputed from the cycle's start (plus the paused time), when the ticket is
+  created, reopened, or its priority or team changes; a breach already recorded in the cycle stays.
+- Breaches: a minute job records a breach of a target that has passed (the reply target while `reply_pending`, the resolution
+  target while its clock runs) on a ticket still being worked, once per target and cycle (`sla_breached {kind}` activity,
+  `sla_breached` notification to the assignee). Solving or closing a ticket records at once the breaches the job has not
+  reached, without a notification. `breached` is true once a breach is recorded in the cycle, solved or not, or while a
+  target that applies has passed on a ticket still being worked.
 
 #### Onboarding
 
@@ -1116,12 +1144,12 @@ type CustomerMessage = { id: string; direction: "inbound" | "outbound"; body_tex
 | POST | `/v1/contacts/{id}/portal/invite` | agent, `contacts:write`. `{brand_id?}` → `PortalAccess`: emails a 7-day, one-time link to choose a password. `422 no_email`, `contact_blocked`, `help_center_off`, `brand_required` (several brands' help centers on and no default among them), `password_sign_in_off` (the brand signs in only through its provider); `429 rate_limited` (5 links an hour per contact), `sender_rate_limited` (200 invitations an hour per member or API key), `workspace_rate_limited` (500 invitations an hour per workspace); the last two count for the whole instance. Audit `contact.portal_invited {brand_id}` |
 | POST | `/v1/contacts/portal/invite` | agent, `contacts:write`. `{ids /* 1..100 */, brand_id?}` → `{sent, skipped: {no_email?, blocked?, active?, rate_limited?, sender_rate_limited?, workspace_rate_limited?, not_found?}}`: the same invitation for each, skipping and counting who cannot or need not be invited |
 | DELETE | `/v1/contacts/{id}/portal` | agent, `contacts:write` → 204: removes the portal password, revokes portal sessions and closes open links. Audit `contact.portal_access_removed` |
-| GET | `/v1/customer/portal/tickets` | `{data: CustomerTicket[], next_cursor: string \| null}`; `limit` defaults to 50, range 1..100. Ordered by `updated_at DESC, id DESC`; pass `next_cursor` as `cursor` for the next page |
+| GET | `/v1/customer/portal/tickets` | `?workspace_slug=` (required: the portal's brand; only its tickets, `404` for a slug that is not a help center of the customer's workspace) → `{data: CustomerTicket[], next_cursor: string \| null}`; `limit` defaults to 50, range 1..100. Ordered by `updated_at DESC, id DESC`; pass `next_cursor` as `cursor` for the next page |
 | POST | `/v1/customer/portal/attachments` | multipart `file` (at most 10 MB) → `201` attachment `{id, filename, content_type, size_bytes, url}`. The customer's own unsent upload, attachable once to a new request (`attachment_ids`); 30 an hour. See [Customer portal](customer-portal.md#files) |
 | POST | `/v1/customer/portal/tickets` | `{workspace_slug, subject /* 1..200 */, body /* 1..10000, plain text */, attachment_ids? /* at most 5 */}` → `201 CustomerTicket`. Opens a ticket on the portal channel for the signed-in customer, on the brand `workspace_slug` names, routed like any ticket; `404` when that brand's portal is off; 10 an hour per customer (`429 rate_limited`) and 500 an hour per workspace (`429 portal_busy`). See [Customer portal](customer-portal.md#starting-a-request) |
-| GET | `/v1/customer/portal/tickets/{id}` | `CustomerTicket` |
-| GET | `/v1/customer/portal/tickets/{id}/messages` | `{data: CustomerMessage[], next_cursor: string \| null}`; same bounded `limit` and `cursor`, ordered chronologically by `created_at ASC, id ASC`. Only public replies, with their text and files; notes, side threads, removed/purged/retracted messages and failed sender-check messages are omitted |
-| POST | `/v1/customer/portal/tickets/{id}/messages` | `{body: string}` (1..10000 characters; whitespace-only refused) → `201 CustomerMessage`. Plain text is trimmed and safely converted to HTML for storage. Written as an inbound contact reply through the normal message transaction, ticket events and `customer_replied` trigger. Pending, on-hold and solved tickets reopen; closed tickets stay closed (closed is final for the customer; a team member reopens one by its status, or by merging an open ticket into it, `POST /v1/tickets/{id}/merge`) |
+| GET | `/v1/customer/portal/tickets/{id}` | `?workspace_slug=` (required, as the list) → `CustomerTicket`; a ticket of another brand is `404` |
+| GET | `/v1/customer/portal/tickets/{id}/messages` | `?workspace_slug=` (required, as the list) → `{data: CustomerMessage[], next_cursor: string \| null}`; same bounded `limit` and `cursor`, ordered chronologically by `created_at ASC, id ASC`. Only public replies, with their text and files; notes, side threads, removed/purged/retracted messages and failed sender-check messages are omitted |
+| POST | `/v1/customer/portal/tickets/{id}/messages` | `?workspace_slug=` (required, as the list), `{body: string}` (1..10000 characters; whitespace-only refused) → `201 CustomerMessage`. Plain text is trimmed and safely converted to HTML for storage. Written as an inbound contact reply through the normal message transaction, ticket events and `customer_replied` trigger. Pending, on-hold and solved tickets reopen; closed tickets stay closed (closed is final for the customer; a team member reopens one by its status, or by merging an open ticket into it, `POST /v1/tickets/{id}/merge`) |
 
 The customer shapes expose no internal ticket fields, agent identities, HTML, email headers,
 attachments or internal activities. Replies accept only plain text; ticket creation, uploads, CCs,
@@ -1423,8 +1451,8 @@ at (`mailbox_id`).
   asks for no automatic answers (`X-Auto-Response-Suppress`), carries someone's `X-Loop`, has a null
   sender, comes from a no-reply address or a workspace address, or failed sender checks gets no
   auto-reply and no automation `send_reply`. Automation replies go out with
-  `Auto-Submitted: auto-generated` and `X-Auto-Response-Suppress: All`, at most 3 per ticket and 10
-  per contact per hour.
+  `Auto-Submitted: auto-generated` and `X-Auto-Response-Suppress: All`. Automation replies on any
+  channel, chat included, are at most 3 per ticket and 10 per contact per hour.
 
 ### Support channels (owner: backend-supportchannels)
 Support-channel connections, destinations, account linking and signed inbound hooks are

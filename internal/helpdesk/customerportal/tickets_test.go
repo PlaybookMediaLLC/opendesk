@@ -20,6 +20,14 @@ import (
 
 const portalTickets = "/v1/customer/portal/tickets"
 
+// scoped names the portal being viewed, as the portal's own requests do.
+func scoped(ws hdtest.WS, path string) string {
+	if strings.Contains(path, "?") {
+		return path + "&workspace_slug=" + url.QueryEscape(ws.Slug)
+	}
+	return path + "?workspace_slug=" + url.QueryEscape(ws.Slug)
+}
+
 func ticketSession(t *testing.T) (*hdtest.Env, hdtest.WS, uuid.UUID, hdtest.Auth) {
 	t.Helper()
 	e, ws, cid, email := portalEnv(t)
@@ -82,37 +90,37 @@ func TestPortalTicketOwnership(t *testing.T) {
 	e.Exec(`UPDATE tickets SET deleted_at=now() WHERE id=$1`, deleted.ID)
 	for _, tk := range []domain.Ticket{other, foreign, spam, deleted} {
 		for _, suffix := range []string{"", "/messages"} {
-			e.Do("GET", portalTickets+"/"+tk.ID.String()+suffix, customer, nil).Want(t, 404)
+			e.Do("GET", scoped(ws, portalTickets+"/"+tk.ID.String()+suffix), customer, nil).Want(t, 404)
 		}
-		e.Do("POST", portalTickets+"/"+tk.ID.String()+"/messages", customer, map[string]any{"body": "Not mine"}).Want(t, 404)
+		e.Do("POST", scoped(ws, portalTickets+"/"+tk.ID.String()+"/messages"), customer, map[string]any{"body": "Not mine"}).Want(t, 404)
 	}
-	e.Do("GET", portalTickets+"/not-an-id", customer, nil).Want(t, 404)
-	r := e.Do("GET", portalTickets+"/"+own.ID.String(), customer, nil).Want(t, 200)
+	e.Do("GET", scoped(ws, portalTickets+"/not-an-id"), customer, nil).Want(t, 404)
+	r := e.Do("GET", scoped(ws, portalTickets+"/"+own.ID.String()), customer, nil).Want(t, 200)
 	m := r.Map(t)
 	delete(m, "$schema")
 	if len(m) != 6 || m["id"] != own.ID.String() || strings.Contains(string(r.Body), "private preview") || strings.Contains(string(r.Body), "internal") ||
 		strings.Contains(string(r.Body), "last_note") {
 		t.Fatalf("ticket DTO: %s", r.Body)
 	}
-	rows, next := pageRows(t, e.Do("GET", portalTickets+"?workspace_id="+otherWS.ID.String()+"&contact_id="+otherContact.String(), customer, nil))
+	rows, next := pageRows(t, e.Do("GET", scoped(ws, portalTickets+"?workspace_id="+otherWS.ID.String()+"&contact_id="+otherContact.String()), customer, nil))
 	if len(rows) != 1 || rows[0]["id"] != own.ID.String() || next != nil {
 		t.Fatalf("scoped list: %+v", rows)
 	}
 	// Internal private-team assignment does not restrict this contact's replies.
 	path := portalTickets + "/" + own.ID.String() + "/messages"
 	for _, field := range []string{"workspace_id", "contact_id", "attachment_ids", "cc", "status", "thread_id", "body_html"} {
-		e.Do("POST", path, customer, map[string]any{"body": "Hello", field: "unsupported"}).Want(t, 422)
+		e.Do("POST", scoped(ws, path), customer, map[string]any{"body": "Hello", field: "unsupported"}).Want(t, 422)
 	}
-	e.Do("POST", path, customer, map[string]any{"body": "Private team reply"}).Want(t, 201)
-	public, _ := pageRows(t, e.Do("GET", path, customer, nil))
+	e.Do("POST", scoped(ws, path), customer, map[string]any{"body": "Private team reply"}).Want(t, 201)
+	public, _ := pageRows(t, e.Do("GET", scoped(ws, path), customer, nil))
 	if len(public) != 1 || public[0]["body_text"] != "Private team reply" {
 		t.Fatalf("private-team conversation: %+v", public)
 	}
 	for _, credential := range []hdtest.Auth{{}, ws.Agent.As(ws), {Bearer: e.APIKey(ws, "tickets:read", "tickets:write")}} {
-		e.Do("GET", portalTickets, credential, nil).Want(t, 401)
-		e.Do("GET", portalTickets+"/"+own.ID.String(), credential, nil).Want(t, 401)
-		e.Do("GET", portalTickets+"/"+own.ID.String()+"/messages", credential, nil).Want(t, 401)
-		e.Do("POST", portalTickets+"/"+own.ID.String()+"/messages", credential, map[string]any{"body": "No customer"}).Want(t, 401)
+		e.Do("GET", scoped(ws, portalTickets), credential, nil).Want(t, 401)
+		e.Do("GET", scoped(ws, portalTickets+"/"+own.ID.String()), credential, nil).Want(t, 401)
+		e.Do("GET", scoped(ws, portalTickets+"/"+own.ID.String()+"/messages"), credential, nil).Want(t, 401)
+		e.Do("POST", scoped(ws, portalTickets+"/"+own.ID.String()+"/messages"), credential, map[string]any{"body": "No customer"}).Want(t, 401)
 	}
 }
 func TestPortalTicketPagination(t *testing.T) {
@@ -126,7 +134,7 @@ func TestPortalTicketPagination(t *testing.T) {
 	var got []string
 	path := portalTickets + "?limit=2"
 	for {
-		rows, next := pageRows(t, e.Do("GET", path, customer, nil))
+		rows, next := pageRows(t, e.Do("GET", scoped(ws, path), customer, nil))
 		if len(rows) > 2 {
 			t.Fatal("page not bounded")
 		}
@@ -142,10 +150,10 @@ func TestPortalTicketPagination(t *testing.T) {
 		t.Fatalf("ticket order: %v, want %v", got, want)
 	}
 	for _, query := range []string{"limit=0", "limit=101"} {
-		e.Do("GET", portalTickets+"?"+query, customer, nil).Want(t, 422)
+		e.Do("GET", scoped(ws, portalTickets+"?"+query), customer, nil).Want(t, 422)
 	}
 	for _, query := range []string{"cursor=broken", "cursor=e30"} {
-		e.Do("GET", portalTickets+"?"+query, customer, nil).Want(t, 400)
+		e.Do("GET", scoped(ws, portalTickets+"?"+query), customer, nil).Want(t, 400)
 	}
 }
 func TestPortalPublicMessages(t *testing.T) {
@@ -169,22 +177,22 @@ func TestPortalPublicMessages(t *testing.T) {
 	second := portalMessage(t, e, ws, tk, "reply", "Public second")
 	// A tie in creation time still has a stable ID order.
 	e.Exec(`UPDATE messages SET created_at='2026-01-01T12:00:00Z' WHERE id=ANY($1)`, []uuid.UUID{first.ID, second.ID})
-	rows, next := pageRows(t, e.Do("GET", path+"?limit=1", customer, nil))
+	rows, next := pageRows(t, e.Do("GET", scoped(ws, path+"?limit=1"), customer, nil))
 	if len(rows) != 1 || rows[0]["id"] != first.ID.String() || len(rows[0]) != 5 || next == nil {
 		t.Fatalf("first message page: %+v", rows)
 	}
-	rows, next = pageRows(t, e.Do("GET", path+"?limit=1&cursor="+url.QueryEscape(*next), customer, nil))
+	rows, next = pageRows(t, e.Do("GET", scoped(ws, path+"?limit=1&cursor="+url.QueryEscape(*next)), customer, nil))
 	if len(rows) != 1 || rows[0]["id"] != second.ID.String() || rows[0]["body_text"] != "Public second" || next != nil {
 		t.Fatalf("public message page: %+v", rows)
 	}
-	r := e.Do("GET", path, customer, nil).Want(t, 200)
+	r := e.Do("GET", scoped(ws, path), customer, nil).Want(t, 200)
 	for _, hidden := range []string{"Private", "Failed sender", "Deleted reply", "Purged reply", "Retracted marker", "body_html", "author_user_id", "from_email", "storage_key", "uploaded_by", "thread_id"} {
 		if strings.Contains(string(r.Body), hidden) {
 			t.Fatalf("hidden message data %q: %s", hidden, r.Body)
 		}
 	}
-	e.Do("GET", path+"?limit=101", customer, nil).Want(t, 422)
-	e.Do("GET", path+"?cursor=broken", customer, nil).Want(t, 400)
+	e.Do("GET", scoped(ws, path+"?limit=101"), customer, nil).Want(t, 422)
+	e.Do("GET", scoped(ws, path+"?cursor=broken"), customer, nil).Want(t, 400)
 }
 func TestPortalReply(t *testing.T) {
 	for _, status := range []string{domain.StatusOpen, domain.StatusPending, domain.StatusOnHold, domain.StatusSolved, domain.StatusClosed} {
@@ -193,7 +201,7 @@ func TestPortalReply(t *testing.T) {
 			tk := portalTicket(t, e, ws, cid, status)
 			text := "<script>alert('hi')</script>\nThanks & goodbye"
 			_, before := e.Events(ws.ID, 0)
-			r := e.Do("POST", portalTickets+"/"+tk.ID.String()+"/messages", customer, map[string]any{"body": text}).Want(t, 201)
+			r := e.Do("POST", scoped(ws, portalTickets+"/"+tk.ID.String()+"/messages"), customer, map[string]any{"body": text}).Want(t, 201)
 			m := r.Map(t)
 			delete(m, "$schema")
 			if len(m) != 5 || m["body_text"] != text || m["direction"] != "inbound" {
@@ -240,7 +248,7 @@ func TestPortalReply(t *testing.T) {
 				t.Fatal("customer reply queued an agent email")
 			}
 			for _, body := range []string{"", " \n\t", strings.Repeat("x", 10001)} {
-				e.Do("POST", portalTickets+"/"+tk.ID.String()+"/messages", customer, map[string]any{"body": body}).Want(t, 422)
+				e.Do("POST", scoped(ws, portalTickets+"/"+tk.ID.String()+"/messages"), customer, map[string]any{"body": body}).Want(t, 422)
 			}
 		})
 	}
@@ -254,16 +262,16 @@ func TestTicketsOffRefusesPortal(t *testing.T) {
 	e.SetSettings(ws, map[string]any{"tickets_enabled": false})
 
 	var out struct{ Code, Product string }
-	e.Do("GET", portalTickets, access, nil).Want(t, 403).JSON(t, &out)
+	e.Do("GET", scoped(ws, portalTickets), access, nil).Want(t, 403).JSON(t, &out)
 	if out.Code != "feature_disabled" || out.Product != "tickets" {
 		t.Fatalf("%+v", out)
 	}
-	e.Do("GET", portalTickets+"/"+ticket.ID.String(), access, nil).Want(t, 403)
+	e.Do("GET", scoped(ws, portalTickets+"/"+ticket.ID.String()), access, nil).Want(t, 403)
 	e.Do("POST", base(ws)+"/auth/login", hdtest.Auth{}, map[string]any{"email": "x@example.com", "password": password}).Want(t, 403)
 	e.Do("GET", base(ws)+"/config", hdtest.Auth{}, nil).Want(t, 200)
 
 	e.SetSettings(ws, map[string]any{"tickets_enabled": true})
-	e.Do("GET", portalTickets, access, nil).Want(t, 200)
+	e.Do("GET", scoped(ws, portalTickets), access, nil).Want(t, 200)
 }
 
 func TestPortalCreateTicket(t *testing.T) {
@@ -304,11 +312,11 @@ func TestPortalCreateTicket(t *testing.T) {
 		t.Fatalf("ticket_created triggers: %d", n)
 	}
 	// It is in the customer's list, and they can read it back.
-	rows, _ := pageRows(t, e.Do("GET", portalTickets, customer, nil))
+	rows, _ := pageRows(t, e.Do("GET", scoped(ws, portalTickets), customer, nil))
 	if len(rows) != 1 || rows[0]["id"] != id {
 		t.Fatalf("list %v", rows)
 	}
-	msgs, _ := pageRows(t, e.Do("GET", portalTickets+"/"+id+"/messages", customer, nil))
+	msgs, _ := pageRows(t, e.Do("GET", scoped(ws, portalTickets+"/"+id+"/messages"), customer, nil))
 	if len(msgs) != 1 || msgs[0]["direction"] != "inbound" {
 		t.Fatalf("messages %v", msgs)
 	}
@@ -488,7 +496,7 @@ func TestPortalRequestWithFiles(t *testing.T) {
 	e.Do("POST", portalTickets, customer, map[string]any{"workspace_slug": ws.Slug, "subject": "Broken page", "body": "See the screenshot",
 		"attachment_ids": []string{shot.ID.String(), notes.ID.String()}}).Want(t, 201).JSON(t, &out)
 	id := out["id"].(string)
-	msgs, _ := pageRows(t, e.Do("GET", portalTickets+"/"+id+"/messages", customer, nil))
+	msgs, _ := pageRows(t, e.Do("GET", scoped(ws, portalTickets+"/"+id+"/messages"), customer, nil))
 	files, _ := msgs[0]["attachments"].([]any)
 	if len(msgs) != 1 || len(files) != 2 {
 		t.Fatalf("messages %v", msgs)
@@ -501,13 +509,13 @@ func TestPortalRequestWithFiles(t *testing.T) {
 	}
 	// A reply has none, and says so with an empty list, not null.
 	var reply map[string]any
-	e.Do("POST", portalTickets+"/"+id+"/messages", customer, map[string]any{"body": "Thanks"}).Want(t, 201).JSON(t, &reply)
+	e.Do("POST", scoped(ws, portalTickets+"/"+id+"/messages"), customer, map[string]any{"body": "Thanks"}).Want(t, 201).JSON(t, &reply)
 	if a, ok := reply["attachments"].([]any); !ok || len(a) != 0 {
 		t.Fatalf("reply attachments %v", reply["attachments"])
 	}
 	// A request without files still lists an empty array.
 	e.Do("POST", portalTickets, customer, map[string]any{"workspace_slug": ws.Slug, "subject": "Plain", "body": "x"}).Want(t, 201).JSON(t, &out)
-	msgs, _ = pageRows(t, e.Do("GET", portalTickets+"/"+out["id"].(string)+"/messages", customer, nil))
+	msgs, _ = pageRows(t, e.Do("GET", scoped(ws, portalTickets+"/"+out["id"].(string)+"/messages"), customer, nil))
 	if a, ok := msgs[0]["attachments"].([]any); !ok || len(a) != 0 {
 		t.Fatalf("plain attachments %v", msgs[0]["attachments"])
 	}
@@ -557,4 +565,34 @@ func TestPortalUploadRefusals(t *testing.T) {
 	}
 	// The same upload goes through once the request is valid.
 	post(mine.ID.String()).Want(t, 201)
+}
+
+// The portal of one brand lists, reads and answers that brand's requests only; another
+// workspace's portal or no portal at all reads none.
+func TestPortalTicketsScopedToBrand(t *testing.T) {
+	e, ws, cid, customer := ticketSession(t)
+	own := portalTicket(t, e, ws, cid, domain.StatusOpen)
+	other := ids.New()
+	slug := "other-" + other.String()[:8]
+	e.Exec(`INSERT INTO brands(id,workspace_id,name,slug,help_center_enabled) VALUES($1,$2,'Other brand',$3,true)`, other, ws.ID, slug)
+	theirs := portalTicket(t, e, ws, cid, domain.StatusOpen)
+	e.Exec(`UPDATE tickets SET brand_id=$2 WHERE id=$1`, theirs.ID, other)
+	otherPortal := hdtest.WS{ID: ws.ID, Slug: slug}
+
+	rows, _ := pageRows(t, e.Do("GET", scoped(ws, portalTickets), customer, nil))
+	if len(rows) != 1 || rows[0]["id"] != own.ID.String() {
+		t.Fatalf("brand list: %+v", rows)
+	}
+	for _, suffix := range []string{"", "/messages"} {
+		e.Do("GET", scoped(ws, portalTickets+"/"+theirs.ID.String()+suffix), customer, nil).Want(t, 404)
+		e.Do("GET", scoped(otherPortal, portalTickets+"/"+theirs.ID.String()+suffix), customer, nil).Want(t, 200)
+	}
+	e.Do("POST", scoped(ws, portalTickets+"/"+theirs.ID.String()+"/messages"), customer, map[string]any{"body": "Wrong portal"}).Want(t, 404)
+	rows, _ = pageRows(t, e.Do("GET", scoped(otherPortal, portalTickets), customer, nil))
+	if len(rows) != 1 || rows[0]["id"] != theirs.ID.String() {
+		t.Fatalf("other brand list: %+v", rows)
+	}
+	elsewhere, _, _ := otherPortalCustomer(t, e)
+	e.Do("GET", scoped(elsewhere, portalTickets), customer, nil).Want(t, 404)
+	e.Do("GET", portalTickets, customer, nil).Want(t, 422)
 }

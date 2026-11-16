@@ -40,7 +40,10 @@ type Ticket = {
   assignee: UserRef | null;
   team_id: string | null;
   tags: { id: string; name: string; color: LabelColor; group_id: string | null }[];
-  sla: { policy_id: string; first_response_due_at: string | null; resolution_due_at: string | null; breached: boolean } | null;
+  sla: { policy_id: string; first_response_due_at: string | null /* the reply target of the current cycle */; resolution_due_at: string | null;
+         started_at: string /* creation, else the last reopen */; paused_at: string | null /* pending or on hold */;
+         first_response_breached_at: string | null; resolution_breached_at: string | null;
+         reply_pending: boolean; breached: boolean /* stays true once a breach is recorded, solved or not */ } | null;
   first_responded_at: string | null;
   solved_at: string | null;
   snoozed_until: string | null;

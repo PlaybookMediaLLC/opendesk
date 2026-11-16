@@ -529,6 +529,7 @@ func applyPatch(ctx context.Context, tx pgx.Tx, d *deps.Deps, wid, tid uuid.UUID
 			solved_at = CASE WHEN $5 IN ('solved', 'closed') THEN COALESCE(solved_at, now()) ELSE NULL END,
 			closed_at = CASE WHEN $5 = 'closed' THEN COALESCE(closed_at, now()) ELSE NULL END,
 			brand_id = $15, mailbox_id = $16, routed = $17,
+			assign_pending_since = CASE WHEN $8::uuid IS NULL THEN assign_pending_since END,
 			updated_at = now()
 			WHERE workspace_id = $1 AND id = $2`,
 			wid, tid, next.Subject, next.Alias, next.Status, next.Priority, next.Contact, next.Assignee, next.Team, next.Snoozed, next.Spam, next.Custom, next.Fields, next.Severity,
@@ -547,6 +548,12 @@ func applyPatch(ctx context.Context, tx pgx.Tx, d *deps.Deps, wid, tid uuid.UUID
 			a.data[k] = v
 		}
 		if _, err := domain.LogActivity(ctx, tx, wid, tid, actor.Type, actor.UserID, a.typ, a.data); err != nil {
+			return nil, err
+		}
+	}
+	if slices.Contains(changes, "status") {
+		// A person's reopen needs no reply target; the team is already on it.
+		if err := slaStatusChanged(ctx, tx, wid, tid, cur.Status, next.Status, true); err != nil {
 			return nil, err
 		}
 	}
