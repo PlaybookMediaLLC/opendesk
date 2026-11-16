@@ -431,6 +431,35 @@ func TestSendOnlyMailboxStartsReading(t *testing.T) {
 	}
 }
 
+// TestSystemSendNeedsConfirmedAdmin: a workspace sends through the platform mailer only
+// once one of its owners or admins has confirmed their email address.
+func TestSystemSendNeedsConfirmedAdmin(t *testing.T) {
+	w := newWorld(t)
+	sends := 0
+	w.s.rawSend = func(context.Context, string, []string, []byte) error { sends++; return nil }
+	m := w.mailbox(InboundForwarding, OutboundSystem, nil)
+	in := w.receive(m, fixture(t, "new_plain.eml", "{{FROM}}", customer(), "{{TO}}", w.forwardAddr(m, ""), "{{ID}}", crypto.RandomString(8)))
+	tk := w.messageFor(in).TicketID
+
+	mustExec(t, w.d, `UPDATE users SET email_verified_at = NULL WHERE id = $1`, w.uid)
+	mid := w.agentReply(tk, "Unconfirmed", "")
+	if err := w.s.sendMessage(w.ctx, w.wid, mid, false); err == nil {
+		t.Fatal("sent through the platform mailer")
+	}
+	if msg := w.message(mid); msg.Delivery != "failed" || !strings.Contains(msg.DelivError, "Confirm the email address") || sends != 0 {
+		t.Fatalf("unconfirmed: %s %q, %d sent", msg.Delivery, msg.DelivError, sends)
+	}
+
+	mustExec(t, w.d, `UPDATE users SET email_verified_at = now() WHERE id = $1`, w.uid)
+	mid = w.agentReply(tk, "Confirmed", "")
+	if err := w.s.sendMessage(w.ctx, w.wid, mid, false); err != nil {
+		t.Fatal(err)
+	}
+	if msg := w.message(mid); msg.Delivery != "sent" || sends != 1 {
+		t.Fatalf("confirmed: %s, %d sent", msg.Delivery, sends)
+	}
+}
+
 // TestSystemSendOff: with MAILBOX_SYSTEM_SEND off no mailbox starts sending through the
 // platform mailer, and one that already does sends nothing until it connects a way to send.
 func TestSystemSendOff(t *testing.T) {

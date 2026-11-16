@@ -141,7 +141,8 @@ func newWorld(t *testing.T) *world {
 	mustExec(t, d, `INSERT INTO workspaces (id, name, slug, widget_key) VALUES ($1, 'Acme', $2, $3)`, w.wid, slug, "wk_"+crypto.RandomString(12))
 	w.brand = ids.New()
 	mustExec(t, d, `INSERT INTO brands (id, workspace_id, name, slug, is_default) VALUES ($1, $2, 'Acme', $3, true)`, w.brand, w.wid, slug)
-	mustExec(t, d, `INSERT INTO users (id, email, name) VALUES ($1, $2, 'Anna Agent')`, w.uid, "anna-"+crypto.RandomString(6)+"@acme.test")
+	// Anna has confirmed her address, so the workspace may send through the platform mailer.
+	mustExec(t, d, `INSERT INTO users (id, email, name, email_verified_at) VALUES ($1, $2, 'Anna Agent', now())`, w.uid, "anna-"+crypto.RandomString(6)+"@acme.test")
 	mustExec(t, d, `INSERT INTO members (workspace_id, user_id, role) VALUES ($1, $2, 'admin')`, w.wid, w.uid)
 	w.admin = &auth.Principal{Kind: auth.KindUser, UserID: w.uid, SessionID: ids.New(), WorkspaceID: w.wid, Role: auth.RoleAdmin, IP: "127.0.0.1"}
 	return w
