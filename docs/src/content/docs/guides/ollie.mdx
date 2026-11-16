@@ -61,7 +61,7 @@ When Ollie wants to change something, it shows an approval card with exactly wha
 - **Deny** leaves everything as it is, and Ollie asks what you want instead.
 - Sending a new message instead skips the change.
 
-If an admin lets Ollie make a kind of change without asking, it makes it right away instead of showing a card, and the step is marked **Ran without asking**. **Show what it ran** opens the same fields and arguments the card would have shown.
+If an admin lets Ollie make a kind of change without asking, it makes it right away instead of showing a card, and the step is marked **Ran without asking**. That stops once the conversation holds anything written outside your team: a ticket you asked from, a customer's message or name it read, a teammate's mail, or what a connected tool answered. From then on every change, and every lookup in a connected tool, shows a card first, because Ollie chose it after reading words you didn't write. **Show what it ran** opens the same fields and arguments the card would have shown.
 
 </Step>
 </Steps>
@@ -127,7 +127,7 @@ Your conversations with Ollie are private to you. Open past ones from **Conversa
 
 Ollie can change the assignee, status, priority, labels and fields, add notes, send replies you approved, save help article drafts and personal views, and (for admins) save automations, switched off for you to review. It prepares one change at a time.
 
-Admins can let Ollie make some of these without asking, in **Settings, AI**, under **Changes Ollie makes without asking**: updating a ticket or several, adding a note, saving a draft article, a personal view or an automation (switched off). It is off by default. Ollie still makes them with the permissions of the person who asked, records each one in the audit log, and stops after 20 such changes for one message. Replies, messages to people outside the team and changes to other settings always ask first, whatever the setting says.
+Admins can let Ollie make some of these without asking, in **Settings, AI**, under **Changes Ollie makes without asking**: updating a ticket or several, adding a note, saving a draft article, a personal view or an automation (switched off). It is off by default. Ollie still makes them with the permissions of the person who asked, records each one in the audit log, and stops after 20 such changes for one message. Replies, messages to people outside the team and changes to other settings always ask first, whatever the setting says, and so does everything once the conversation holds text from outside your team.
 
 Bulk changes cover at most 50 tickets per approval, and the tickets are fixed when Ollie proposes the change, so a ticket that arrives later is not swept in.
 

@@ -67,7 +67,7 @@ In the reply box of a ticket, click **AI** to draft or rework a reply. Nothing i
 <Legend>
 
 1. **AI**: opens the menu.
-2. **Draft a reply** writes one from the conversation, the contact, your saved replies and the most relevant help articles, citing its sources. With [integrations](/guides/integrations/) connected, it first looks up what the reply needs with the tools that look things up on their own, such as an order or a refund, and never changes anything there. **Draft with instructions** lets you say what to write.
+2. **Draft a reply** writes one from the conversation, the contact, your saved replies and the most relevant help articles, citing its sources. With [integrations](/guides/integrations/) connected, it first looks up what the reply needs with the tools that look things up on their own, such as an order or a refund, and never changes anything there. It looks things up only on a ticket your team wrote alone: once a customer has written in, what it would send to a tool was chosen after reading their words, so the draft is written without a lookup. **Draft with instructions** lets you say what to write.
 3. **Rewrite** your draft: friendlier, more formal, shorter, longer, fix spelling and grammar, or simpler. **Translate into** turns it into a language you pick: the customer's comes first when triage detected it.
 
 </Legend>
@@ -106,7 +106,7 @@ In **AI agent, Behaviour**, turn on **Let the agent answer chats**. Under **Bots
 </Step>
 <Step title="Set its limits">
 
-Further down, choose the **Agent model**, how many **Replies per conversation** it gives before handing off, **Topics to decline**, a **Monthly spending cap**, and whether to **Ask for an email before handing off**.
+Further down, choose the **Agent model**, how many **Replies per conversation** it gives before handing off, **Topics to decline**, a **Monthly spending cap** ($100 until you set one; 0 removes it), and whether to **Ask for an email before handing off**.
 
 <Screenshot src="/guides/ai/agent-guardrails" alt="Model and limits and Guardrails: the agent model and replies per conversation ringed as 1, Topics to decline as 2, Monthly spending cap as 3, and Ask for an email before handing off as 4" />
 
@@ -120,7 +120,7 @@ Published help center articles are always part of its knowledge. In **AI agent, 
 </Step>
 <Step title="Connect tools, if you have them">
 
-In **AI agent, Tools**, **Connect a server** adds your own MCP server, so the agent can look up an order or update an address for a visitor. Choose which tools it may use. A tool that changes something asks the visitor to confirm first.
+In **AI agent, Tools**, **Connect a server** adds your own MCP server, so the agent can look up an order or update an address for a visitor. Choose which tools it may use. A tool that changes something always asks the visitor to confirm first, and starts offered only to visitors your site verified. **Test** runs a tool once as a test call: your server sees that it is a test and never a verified visitor, and a tool that changes something runs only after you confirm.
 
 <Screenshot src="/guides/ai/agent-tools" alt="The Tools page: Connect a server ringed as 1, a connected Shop server ringed as 2, and a Linear server that needs sign-in with its Connect button ringed as 3" />
 
@@ -154,7 +154,7 @@ With chat answers on, the agent replies to every visitor message in a conversati
 
 <Legend>
 
-1. **Actions**: when a tool would change something, the visitor sees what will happen and confirms or declines. An action not answered in 15 minutes lapses.
+1. **Actions**: when a tool would change something, the visitor sees what will happen, with the exact details the tool will run with, and confirms or declines. An action not answered in 15 minutes lapses.
 2. **Improve answer** (admins): write the answer it should have given. It is saved as a Q&A snippet and used at once.
 3. **Handoff**: the agent hands off when the visitor asks for a person, when it cannot help, or after its reply limit. It first tells the visitor a person will reply here and asks for anything your team will need, such as an order number or photos. The assignee or team is notified.
 

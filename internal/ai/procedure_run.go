@@ -28,8 +28,8 @@ import (
 // reaches the customer: it reads, leaves internal notes, raises priority or severity and
 // adds labels. Its context always holds text from outside the workspace (the customer's
 // messages, call transcripts) and no person is there to approve, so no connected tool runs:
-// a connected write an admin set to run without asking is suggested to the team instead,
-// with its exact arguments, in one internal note at the end of the run.
+// a connected write is suggested to the team instead, with its exact arguments, in one
+// internal note at the end of the run.
 
 const (
 	procedureMaxTurns  = 8
@@ -343,9 +343,9 @@ func (r *procedureRun) run(ctx context.Context, set hd.AISettings) (string, erro
 }
 
 // offer lists the run's tools: knowledge and wiki reads, notes and ticket updates, and the
-// connected writes an admin set to run without asking, offered to be suggested. Connected
-// reads are not offered: their arguments would leave the workspace, chosen after reading
-// outside text, with nobody to approve them.
+// workspace's connected writes (the tools turned on in settings), offered to be suggested.
+// Connected reads are not offered: their arguments would leave the workspace, chosen after
+// reading outside text, with nobody to approve them.
 func (r *procedureRun) offer(ctx context.Context) []ToolSpec {
 	r.tools = map[string]procedureTool{}
 	add := func(t procedureTool) { r.tools[t.spec.Name] = t }
@@ -374,8 +374,8 @@ func (r *procedureRun) offer(ctx context.Context) []ToolSpec {
 		r.s.d.Log.Warn("procedure connected tools unavailable", "workspace_id", r.a.WorkspaceID, "err", err)
 	}
 	for _, x := range ext {
-		if x.ReadOnly || !(x.AutoRun || x.OnAutoTools) {
-			continue // reads and writes an admin did not choose are not offered
+		if x.ReadOnly {
+			continue // a read would send its arguments out with nobody to approve them
 		}
 		if _, taken := r.tools[x.Name]; taken {
 			continue

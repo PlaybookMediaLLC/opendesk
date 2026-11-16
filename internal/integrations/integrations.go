@@ -433,9 +433,6 @@ type Tool struct {
 	// ask_tools, and marked neither destructive nor open-world by its server). Call checks
 	// it again when the call runs.
 	AutoRun bool
-	// OnAutoTools: an admin listed the write in auto_tools (and not in ask_tools), whatever
-	// its annotations allow; a procedure run suggests such writes to the team.
-	OnAutoTools bool
 	// OpenWorld: the server does not mark the tool as staying in a closed system
 	// (openWorldHint true or absent), so a call may reach people or systems outside the
 	// workspace.
@@ -495,8 +492,7 @@ func (s *Service) Tools(ctx context.Context, wid uuid.UUID) ([]Tool, error) {
 			out = append(out, Tool{Name: toolName(x.Slug, t.Name), Remote: t.Name, IntegrationID: x.ID, Integration: x.Name,
 				Provider: x.Provider, Title: firstNonEmpty(t.Title, humanize(t.Name)),
 				Description: clip("["+x.Name+"] "+desc, 1100), Schema: schema, ReadOnly: x.readOnly(t), AutoRun: x.autoRun(t),
-				OpenWorld: t.OpenWorld(), Hosts: prov.Hosts,
-				OnAutoTools: !x.readOnly(t) && slices.Contains(x.AutoTools, t.Name) && !slices.Contains(x.AskTools, t.Name)})
+				OpenWorld: t.OpenWorld(), Hosts: prov.Hosts})
 		}
 	}
 	if withheld > 0 {

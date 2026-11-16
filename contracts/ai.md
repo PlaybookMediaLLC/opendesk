@@ -661,8 +661,8 @@ allowed on `ticket_created`, `customer_replied`, `agent_replied` and `call_ended
   sanitized like every note; `ai: true`, from Ollie, runs no automations), `update_ticket` (raises
   priority or severity, never lowers them, and adds existing labels, exclusive groups kept; activities
   carry `{via: "procedure", procedure_id, automation_id}`; without severity in the workspace it offers
-  and sets priority and labels only, and the ticket's facts leave severity out), and the connected writes an
-  admin put on their integration's `auto_tools` (`contracts/integrations.md`), offered to be suggested only:
+  and sets priority and labels only, and the ticket's facts leave severity out), and the workspace's connected
+  writes (`contracts/integrations.md`, the tools turned on), offered to be suggested only:
   a call is not sent; its tool and exact arguments go to the team in one internal note at the end of the
   run (from Ollie, `ai: true`), for a person to make. Connected reads are not offered. No other write is
   offered: never a reply, a handoff or anything a customer sees.

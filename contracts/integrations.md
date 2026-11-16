@@ -158,8 +158,8 @@ Tools turned off in settings are neither offered nor run. `disabled_tools`, `ask
 - A draft reply (`contracts/ai.md` "Drafts and connected tools") calls reads only (`CallRead`), before
   it is written, and only on a thread the team alone wrote.
 - A procedure an automation runs (`contracts/ai.md` "Automations") calls no connected tool: its context
-  holds the customer's text and nobody approves there. Writes on `auto_tools` are offered to be suggested:
-  their exact arguments go to the team in an internal note, for a person to make.
+  holds the customer's text and nobody approves there. Its writes are offered to be suggested only: their
+  exact arguments go to the team in an internal note, for a person to make.
 
 ## Events
 

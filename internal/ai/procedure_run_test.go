@@ -34,7 +34,7 @@ func (f *fakeLinear) Tools(context.Context, uuid.UUID) ([]integrations.Tool, err
 	obj := map[string]any{"type": "object", "properties": map[string]any{"title": map[string]any{"type": "string"}}}
 	t := func(remote string, read, auto bool) integrations.Tool {
 		return integrations.Tool{Name: "linear__" + remote, Remote: remote, IntegrationID: f.iid, Integration: "Linear", Provider: "linear",
-			Title: remote, Description: "[Linear] " + remote, Schema: obj, ReadOnly: read, AutoRun: auto, OnAutoTools: auto, Hosts: []string{"linear.app"}}
+			Title: remote, Description: "[Linear] " + remote, Schema: obj, ReadOnly: read, AutoRun: auto, Hosts: []string{"linear.app"}}
 	}
 	return []integrations.Tool{t("list_issues", true, false), t("create_issue", false, true), t("delete_issue", false, false)}, nil
 }
@@ -193,18 +193,18 @@ func TestProcedureRunTools(t *testing.T) {
 	}
 	reqs := e.procedureRequests()
 	names := toolNames(reqs[0])
-	for _, want := range []string{"linear__create_issue", "add_note", "update_ticket", "search_knowledge", "search_wiki", "get_wiki_page"} {
+	for _, want := range []string{"linear__create_issue", "linear__delete_issue", "add_note", "update_ticket", "search_knowledge", "search_wiki", "get_wiki_page"} {
 		if !containsStr(names, want) {
 			t.Fatalf("tools %v lack %s", names, want)
 		}
 	}
 	// Connected reads are not offered: their arguments would leave the workspace with nobody to approve them.
-	for _, never := range []string{"linear__list_issues", "linear__delete_issue", "send_reply", "handoff_to_human"} {
+	for _, never := range []string{"linear__list_issues", "send_reply", "handoff_to_human"} {
 		if containsStr(names, never) {
 			t.Fatalf("tools %v offer %s", names, never)
 		}
 	}
-	// No connected tool ran: the write on auto_tools is only suggested.
+	// No connected tool ran: the writes are only suggested (the delete too, named by the model).
 	f.mu.Lock()
 	if len(f.calls) != 0 {
 		t.Fatalf("calls %v %v", f.calls, f.modes)
@@ -219,7 +219,8 @@ func TestProcedureRunTools(t *testing.T) {
 		t.Fatalf("note %s", note)
 	}
 	e.Scalar(`SELECT body_text FROM messages WHERE ticket_id = $1 AND kind = 'note' AND ai ORDER BY created_at DESC, id DESC LIMIT 1`, &suggested, tk.ID)
-	if !strings.Contains(suggested, "Linear: create_issue") || !strings.Contains(suggested, `"title": "Login loop"`) || !strings.Contains(suggested, "not run") {
+	if !strings.Contains(suggested, "Linear: create_issue") || !strings.Contains(suggested, `"title": "Login loop"`) || !strings.Contains(suggested, "not run") ||
+		!strings.Contains(suggested, "Linear: delete_issue") {
 		t.Fatalf("suggestion note %s", suggested)
 	}
 	if n := e.count(`SELECT count(*) FROM messages WHERE ticket_id = $1 AND kind = 'reply' AND direction = 'outbound'`, tk.ID); n != 0 {
@@ -230,7 +231,7 @@ func TestProcedureRunTools(t *testing.T) {
 		t.Fatalf("ticket %+v %v", got.Priority, got.Tags)
 	}
 	ran := e.procedureRan(tk.ID)
-	if len(ran) != 1 || ran[0]["outcome"] != "done" || ran[0]["writes"] != float64(3) || ran[0]["suggested"] != float64(1) {
+	if len(ran) != 1 || ran[0]["outcome"] != "done" || ran[0]["writes"] != float64(3) || ran[0]["suggested"] != float64(2) {
 		t.Fatalf("activity %v", ran)
 	}
 	// Priority is never lowered.
