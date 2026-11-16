@@ -68,8 +68,10 @@ func TestAgentStartsChat(t *testing.T) {
 	if s.Unread != 0 || s.UnreadLatest != nil {
 		t.Fatal("unread before anything was sent", s.Unread)
 	}
-	// The visitor left the page: the first message also goes by email.
+	// The visitor left the page: the first message also goes by email, to the address a member
+	// confirmed (one typed in the widget without a verified identity gets no email until then).
 	e.Exec(`UPDATE widget_sessions SET last_seen_at = now() - interval '1 hour' WHERE contact_id = $1`, s.Contact.ID)
+	e.Do("PATCH", "/v1/contacts/"+s.Contact.ID.String(), ws.Agent.As(ws), map[string]any{"email": "visitor@example.com"}).Want(t, 200)
 
 	var tk domain.Ticket
 	startChat(e, ws, ws.Agent.As(ws), map[string]any{"contact_id": s.Contact.ID}).Want(t, 201).JSON(t, &tk)
