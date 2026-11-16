@@ -10,7 +10,11 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// gmailCategoryRefresh persists a stable stored-message keyset and a baseline to replay.
+// gmailCategoryRefresh persists a stable stored-message keyset and a baseline to replay. It
+// runs when the account's category engine becomes gmail, and for every Gmail account whose
+// history id expired (Expired): the sweep reads every stored message again, so mail deleted,
+// archived or relabelled while the history lapsed is brought in step. The category epoch
+// guards it: a change of engine starts a new epoch, which ends a sweep of the old one.
 type gmailCategoryRefresh struct {
 	Baseline string    `json:"baseline"`
 	From     string    `json:"from"`
@@ -32,7 +36,7 @@ func (s *service) saveCategoryRefresh(ctx context.Context, tx pgx.Tx, a *account
 		}
 		value = b
 	}
-	_, err := tx.Exec(ctx, `UPDATE collab_accounts SET category_refresh = $3 WHERE id = $1 AND category_epoch = $2 AND category_engine = 'gmail'`, a.ID, a.CategoryEpoch, value)
+	_, err := tx.Exec(ctx, `UPDATE collab_accounts SET category_refresh = $3 WHERE id = $1 AND category_epoch = $2`, a.ID, a.CategoryEpoch, value)
 	return err
 }
 
@@ -121,7 +125,7 @@ func (s *service) refreshGmailCategories(ctx context.Context, p *pass, g *gmailP
 		}
 		r.Swept = len(list) < 100
 		err = p.batch(ctx, func(tx pgx.Tx) error {
-			if p.a.CategoryEpoch != expectedEpoch || p.a.CategoryEngine != modeGmail {
+			if p.a.CategoryEpoch != expectedEpoch {
 				return nil
 			}
 			for j, i := range list {
@@ -198,7 +202,7 @@ func (s *service) refreshGmailCategories(ctx context.Context, p *pass, g *gmailP
 		if err != nil {
 			return err
 		}
-		if a.CategoryEpoch != expectedEpoch || a.CategoryEngine != modeGmail {
+		if a.CategoryEpoch != expectedEpoch {
 			return nil
 		}
 		if _, err := tx.Exec(ctx, `UPDATE collab_accounts SET sync_state = $2, category_refresh = NULL WHERE id = $1`, a.ID, b); err != nil {

@@ -3,6 +3,7 @@ package collab
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -74,8 +75,24 @@ func (s *service) cleanup(ctx context.Context) error {
 			return err
 		}
 	}
+	// A conversation set aside when its mail went keeps its discussion for emptiedKeep; its
+	// mail did not come back in that time. A send's idempotency key answers for a day.
+	if _, err := s.d.DB.Pool.Exec(ctx, `DELETE FROM collab_threads t WHERE t.emptied_at < now() - make_interval(secs => $1)
+		AND NOT EXISTS (SELECT 1 FROM collab_messages m WHERE m.thread_id = t.id)`, emptiedKeep.Seconds()); err != nil {
+		return err
+	}
+	if _, err := s.d.DB.Pool.Exec(ctx, `DELETE FROM collab_send_keys WHERE created_at < now() - make_interval(secs => $1)`, sendKeyKeep.Seconds()); err != nil {
+		return err
+	}
 	return s.emptyStorageTrash(ctx)
 }
+
+// emptiedKeep is how long a conversation set aside when its mail went keeps its comments,
+// assignees and shares; sendKeyKeep how long a send's idempotency key answers.
+const (
+	emptiedKeep = 90 * 24 * time.Hour
+	sendKeyKeep = 24 * time.Hour
+)
 
 // publishAccountGone tells who saw a deleted account that it is gone.
 func (s *service) publishAccountGone(ctx context.Context, tx pgx.Tx, wid, accountID uuid.UUID, users []uuid.UUID) error {

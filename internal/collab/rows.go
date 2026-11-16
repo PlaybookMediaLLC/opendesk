@@ -230,6 +230,8 @@ type storedAttachment struct {
 	ContentID   string `json:"content_id"`
 	// RemoteID is the provider's attachment id when the raw message is not stored (Graph).
 	RemoteID string `json:"remote_id,omitempty"`
+	// Blocked marks a program or script (hd.IsExecutable): listed, never served.
+	Blocked bool `json:"blocked,omitempty"`
 }
 
 // messageRow is a stored message.

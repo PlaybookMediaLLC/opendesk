@@ -1064,12 +1064,15 @@ func TestGmailSyncExpiredHistoryDuringAPagedRead(t *testing.T) {
 	if st := gmailStateOf(t, w.reload(a)); st.PageToken == "" {
 		t.Fatalf("no saved page: %+v", st)
 	}
-	// Gmail no longer has the history the read started from: a first sync again.
+	// Gmail no longer has the history the read started from: stored mail is read again,
+	// and the history goes on from where that read began.
 	g.mu.Lock()
-	g.gone = true
+	g.expireBefore = g.history
 	g.mu.Unlock()
-	if err := w.s.syncAccount(w.ctx, a.ID); err != nil {
-		t.Fatal(err)
+	for i := 0; i < 5 && (i == 0 || w.count(`SELECT count(*) FROM collab_accounts WHERE id = $1 AND category_refresh IS NOT NULL`, a.ID) > 0); i++ {
+		if err := w.s.syncAccount(w.ctx, a.ID); err != nil {
+			t.Fatal(err)
+		}
 	}
 	a = w.reload(a)
 	if st := gmailStateOf(t, a); a.Status != "active" || st.PageToken != "" || st.RunHistoryID != "" || st.HistoryID != strconv.Itoa(g.history) {

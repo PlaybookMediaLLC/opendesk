@@ -2,6 +2,7 @@ package collab
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"regexp"
@@ -15,6 +16,7 @@ import (
 	"golang.org/x/net/html/atom"
 
 	"github.com/useopendesk/opendesk/internal/auth"
+	"github.com/useopendesk/opendesk/internal/db"
 	"github.com/useopendesk/opendesk/internal/email"
 	"github.com/useopendesk/opendesk/internal/httpx"
 )
@@ -34,7 +36,8 @@ const sendPerMinute = 60
 const maxSendHTML = 2 << 20
 
 type sendInput struct {
-	Body struct {
+	IdempotencyKey string `header:"Idempotency-Key" maxLength:"200" doc:"The same key from the same person within a day answers the message it already sent instead of sending it again"`
+	Body           struct {
 		AccountID          uuid.UUID   `json:"account_id"`
 		Mode               string      `json:"mode" enum:"new,reply,reply_all,forward"`
 		MessageID          *uuid.UUID  `json:"message_id,omitempty" doc:"The message replied to or forwarded; required unless new"`
@@ -50,6 +53,13 @@ type sendInput struct {
 }
 
 func errSend(detail string) error { return httpx.E(502, "send_failed", detail) }
+
+// sendKeyHold is how long a send that did not store its message holds its idempotency key.
+const sendKeyHold = 10 * time.Minute
+
+// errSendPending answers a send whose idempotency key is held by a send not yet stored: it
+// may be at the provider already, so it is not sent again.
+var errSendPending = httpx.E(409, "send_in_progress", "This message is being sent or may have been sent already. Check Sent before sending it again.")
 
 func (s *service) registerSendRoutes(api huma.API) {
 	collabOp(api, huma.Operation{OperationID: "send-collab-message", Method: http.MethodPost, Path: "/v1/collab/messages",
@@ -83,9 +93,29 @@ func (s *service) send(ctx context.Context, p *auth.Principal, in *sendInput) (M
 	}
 	a := t.a
 
+	// An idempotency key holds the send from here: a retry with the same key answers the
+	// stored message, or waits for it, and is never sent twice. A send the provider refused
+	// gives its key back.
+	key := strings.TrimSpace(in.IdempotencyKey)
+	release := func() {}
+	if key != "" {
+		done, err := s.claimSendKey(ctx, p, a, key)
+		if err != nil || done != nil {
+			if done != nil {
+				return s.messageByID(ctx, p, a, *done)
+			}
+			return MailMessage{}, err
+		}
+		release = func() {
+			_, _ = s.d.DB.Pool.Exec(context.WithoutCancel(ctx), `DELETE FROM collab_send_keys WHERE workspace_id = $1 AND user_id = $2 AND key = $3
+				AND message_id IS NULL`, p.WorkspaceID, p.UserID, key)
+		}
+	}
+
 	// Sent through the provider within the request: nothing is stored when it refuses.
 	prov, err := s.provider(ctx, a)
 	if err != nil {
+		release()
 		return MailMessage{}, errSend(safeError(err))
 	}
 	defer prov.Close()
@@ -100,13 +130,60 @@ func (s *service) send(ctx context.Context, p *auth.Principal, in *sendInput) (M
 	ref, err := prov.Send(sctx, out.Raw, info)
 	if err != nil {
 		s.log.Warn("collab send refused", "account_id", a.ID, "err", err)
+		var pe *providerError
+		if isPermanent(err) || errors.As(err, &pe) && pe.limited {
+			release() // refused (for good, or by a rate limit before it ran): nothing went out
+		}
 		return MailMessage{}, errSend(safeError(err))
 	}
 	mid, err := s.storeSent(ctx, a, out.Raw, ref, p.UserID, threadID)
 	if err != nil {
 		return MailMessage{}, httpx.Wrap(err)
 	}
+	if key != "" {
+		if _, err := s.d.DB.Pool.Exec(context.WithoutCancel(ctx), `UPDATE collab_send_keys SET message_id = $4 WHERE workspace_id = $1 AND user_id = $2 AND key = $3`,
+			p.WorkspaceID, p.UserID, key, mid); err != nil {
+			s.log.Warn("collab send key not recorded", "account_id", a.ID, "err", err)
+		}
+	}
 	return s.messageByID(ctx, p, a, mid)
+}
+
+// claimSendKey takes a send's idempotency key for the caller. It answers the stored message
+// when the key already sent one from this account, errSendPending when its send is not
+// stored yet (or the key was used for another account), else nil, nil: the key is the
+// caller's to send with.
+func (s *service) claimSendKey(ctx context.Context, p *auth.Principal, a *accountRow, key string) (*uuid.UUID, error) {
+	pool := s.d.DB.Pool
+	tag, err := pool.Exec(ctx, `INSERT INTO collab_send_keys (workspace_id, user_id, key, account_id) VALUES ($1, $2, $3, $4)
+		ON CONFLICT DO NOTHING`, p.WorkspaceID, p.UserID, key, a.ID)
+	if err != nil {
+		return nil, httpx.Wrap(err)
+	}
+	if tag.RowsAffected() == 1 {
+		return nil, nil
+	}
+	// A send that ended without storing its message long ago gives its key up: whoever
+	// retries has been told to check Sent for sendKeyHold.
+	tag, err = pool.Exec(ctx, `UPDATE collab_send_keys SET account_id = $4, created_at = now() WHERE workspace_id = $1 AND user_id = $2 AND key = $3
+		AND message_id IS NULL AND created_at < now() - make_interval(secs => $5)`, p.WorkspaceID, p.UserID, key, a.ID, sendKeyHold.Seconds())
+	if err != nil {
+		return nil, httpx.Wrap(err)
+	}
+	if tag.RowsAffected() == 1 {
+		return nil, nil
+	}
+	var account uuid.UUID
+	var mid *uuid.UUID
+	err = pool.QueryRow(ctx, `SELECT account_id, message_id FROM collab_send_keys WHERE workspace_id = $1 AND user_id = $2 AND key = $3`,
+		p.WorkspaceID, p.UserID, key).Scan(&account, &mid)
+	if err != nil && !db.IsNotFound(err) {
+		return nil, httpx.Wrap(err)
+	}
+	if err == nil && mid != nil && account == a.ID {
+		return mid, nil
+	}
+	return nil, errSendPending
 }
 
 // messageByID loads one stored message of the account as the API shows it.

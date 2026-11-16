@@ -18,6 +18,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/useopendesk/opendesk/internal/config"
+	"github.com/useopendesk/opendesk/internal/db"
 	"github.com/useopendesk/opendesk/internal/displayname"
 	"github.com/useopendesk/opendesk/internal/email"
 )
@@ -433,22 +434,41 @@ func (s *service) accessToken(ctx context.Context, a *accountRow) (string, error
 	return out, err
 }
 
-// expireToken forgets a cached access token the provider just refused.
+// expireToken forgets a cached access token the provider just refused, under the account's
+// row lock like a refresh: only the expiry of that same token changes, so a token (or a
+// rotated refresh token) another call stored meanwhile is kept.
 func (s *service) expireToken(ctx context.Context, a *accountRow) error {
-	creds, err := s.openCreds(a)
+	refused, err := s.openCreds(a)
 	if err != nil {
 		return err
 	}
-	creds.Expiry = time.Time{}
-	sealed, err := s.sealCreds(creds)
-	if err != nil {
-		return err
-	}
-	if _, err := s.d.DB.Pool.Exec(ctx, `UPDATE collab_accounts SET credentials_enc = $2 WHERE id = $1`, a.ID, sealed); err != nil {
-		return err
-	}
-	a.CredentialsEnc = sealed
-	return nil
+	return s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+		locked, err := loadAccountForUpdate(ctx, tx, a.ID)
+		if db.IsNotFound(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		creds, err := s.openCreds(locked)
+		if err != nil {
+			return err
+		}
+		if creds.AccessToken != refused.AccessToken || creds.Expiry.IsZero() {
+			a.CredentialsEnc = locked.CredentialsEnc
+			return nil
+		}
+		creds.Expiry = time.Time{}
+		sealed, err := s.sealCreds(creds)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE collab_accounts SET credentials_enc = $2 WHERE id = $1`, a.ID, sealed); err != nil {
+			return err
+		}
+		a.CredentialsEnc = sealed
+		return nil
+	})
 }
 
 // revokeGoogle revokes a disconnected Google account's grant, best effort and briefly.

@@ -39,12 +39,25 @@ func (g *fakeGraph) serveCats(w http.ResponseWriter, r *http.Request, parts []st
 			w.WriteHeader(204)
 			return
 		}
-		if r.URL.Query().Get("$select") != "categories" {
-			g.t.Errorf("message read: %s", r.URL.RawQuery)
-		}
 		cats := c.onMsg[id]
 		if cats == nil {
 			cats = []string{}
+		}
+		if sel := r.URL.Query().Get("$select"); sel != "categories" {
+			// A message read for where it is (an orphan's relocation, a refused action's read back).
+			if !strings.Contains(sel, "parentFolderId") {
+				g.t.Errorf("message read: %s", r.URL.RawQuery)
+			}
+			m := g.msgs[id]
+			if m == nil {
+				w.WriteHeader(404)
+				_, _ = w.Write([]byte(`{"error":{"code":"ErrorItemNotFound","message":"x"}}`))
+				return
+			}
+			item := g.item(m)
+			item["categories"] = cats
+			reply(item)
+			return
 		}
 		reply(map[string]any{"id": id, "categories": cats})
 		return
@@ -151,9 +164,9 @@ func TestOutlookCategories(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		return p.removeOrphans(w.ctx, tx)
+		return p.sweepOrphans(w.ctx, tx)
 	})
-	if err != nil || w.count(`SELECT count(*) FROM collab_messages WHERE account_id = $1`, a.ID) != 2 {
+	if err != nil || w.count(`SELECT count(*) FROM collab_messages WHERE account_id = $1 AND orphaned_at IS NULL`, a.ID) != 2 {
 		t.Fatalf("orphans: %v", err)
 	}
 

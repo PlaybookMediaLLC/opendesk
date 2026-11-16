@@ -472,6 +472,13 @@ type CollabApplyArgs struct {
 	Action           string      `json:"action"`
 	FolderID         *uuid.UUID  `json:"folder_id,omitempty"`
 	CategoryIntentID *uuid.UUID  `json:"category_intent_id,omitempty"`
+	// MessageIDs are the stored messages the action changed in opendesk: the provider gets
+	// those alone, never mail that arrived in the conversation after the action. Empty in a
+	// job queued before they were recorded: every message of the conversations.
+	MessageIDs []uuid.UUID `json:"message_ids,omitempty"`
+	// At is when the action was taken: a Gmail archive or move also takes the conversation's
+	// older messages opendesk does not store, never newer ones.
+	At *time.Time `json:"at,omitempty"`
 }
 
 func (CollabApplyArgs) Kind() string { return "collab.apply" }

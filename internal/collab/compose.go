@@ -2,6 +2,7 @@ package collab
 
 import (
 	"context"
+	"encoding/base64"
 	"net/mail"
 	"slices"
 	"strconv"
@@ -44,6 +45,9 @@ type composeIn struct {
 	ClientRef string
 }
 
+// errGraphTooLarge refuses a Microsoft message over the size Graph takes in one request.
+var errGraphTooLarge = httpx.E(422, "message_too_large", "Microsoft accepts messages up to about 3 MB, attachments included. Remove some files or share them as links.")
+
 // composed is a message ready for the provider.
 type composed struct {
 	Raw        []byte // Bcc included: Gmail and Graph read recipients from it
@@ -66,7 +70,9 @@ type target struct {
 }
 
 // composeTarget checks who may write: new mail needs sight of the account; a reply or
-// forward, sight of the conversation (a conversation shared on its own is enough).
+// forward, sight of the conversation (a conversation shared on its own is enough). Either
+// way the caller must be able to use the account's mailbox (canUseMailbox): a private
+// account's mail goes out by its owner alone.
 func (s *service) composeTarget(ctx context.Context, p *auth.Principal, accountID uuid.UUID, mode string, messageID *uuid.UUID) (target, error) {
 	pool := s.d.DB.Pool
 	a, err := loadAccount(ctx, pool, p.WorkspaceID, accountID)
@@ -77,6 +83,9 @@ func (s *service) composeTarget(ctx context.Context, p *auth.Principal, accountI
 	if mode == ModeNew {
 		if _, err := visibleAccount(ctx, pool, p, a.ID); err != nil {
 			return target{}, httpx.NotFound("Account")
+		}
+		if !canUseMailbox(p, a) {
+			return target{}, errOwnerOnly
 		}
 		return out, nil
 	}
@@ -90,6 +99,10 @@ func (s *service) composeTarget(ctx context.Context, p *auth.Principal, accountI
 	}
 	if out.thread, err = visibleThread(ctx, pool, p, out.orig.ThreadID); err != nil {
 		return target{}, notFound(err, "Message")
+	}
+	// Mail goes out from a private account's addresses by its owner alone.
+	if !canUseMailbox(p, a) {
+		return target{}, errOwnerOnly
 	}
 	return out, nil
 }
@@ -366,6 +379,11 @@ func (s *service) compose(ctx context.Context, p *auth.Principal, t target, in c
 	raw, err := email.BuildMIME(msg, true)
 	if err != nil {
 		return nil, httpx.Wrap(err)
+	}
+	// Microsoft takes a message from its MIME source in one request: one past that limit is
+	// refused here, before anything is sent or saved.
+	if t.a.Provider == ProviderMicrosoft && base64.StdEncoding.EncodedLen(len(raw)) > graphMaxRequest {
+		return nil, errGraphTooLarge
 	}
 	return &composed{Raw: raw, Recipients: slices.Concat(to, cc, bcc), To: to, Cc: cc, Bcc: bcc, Subject: subject, HTML: body,
 		MessageID: msgID, HasFiles: len(files) > 0, From: from.Email}, nil

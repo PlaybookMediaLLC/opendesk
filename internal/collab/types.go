@@ -327,6 +327,8 @@ type MailAttachment struct {
 	Inline      bool   `json:"inline"`
 	ContentID   string `json:"content_id"`
 	URL         string `json:"url"`
+	// Blocked is a program or script: listed, never downloaded from opendesk.
+	Blocked bool `json:"blocked,omitempty"`
 }
 
 type MailComment struct {
@@ -360,7 +362,11 @@ type MailThreadDetail struct {
 	Messages []MailMessage `json:"messages"`
 	Comments []MailComment `json:"comments"`
 	Shares   Audience      `json:"shares"`
-	CanAct   bool          `json:"can_act"`
+	CanAct   bool          `json:"can_act" doc:"The caller may comment (agent or above)"`
+	// CanUseMailbox: the caller may act on the conversation at the provider, reply or forward
+	// from the account, save drafts, share it, assign it and mention people who do not see it
+	// yet. For a private account only its owner; for a shared account anyone who can act.
+	CanUseMailbox bool `json:"can_use_mailbox"`
 	// Ticket is the ticket the conversation answered or was answered from, when the caller
 	// sees it ("Answering tickets").
 	Ticket *ThreadTicket `json:"ticket"`

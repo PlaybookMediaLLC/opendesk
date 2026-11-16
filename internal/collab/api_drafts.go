@@ -401,6 +401,10 @@ func (s *service) lockDraft(ctx context.Context, p *auth.Principal, rawID string
 		unlock()
 		return nil, nil, nil, nil, err
 	}
+	if !canUseMailbox(p, a) {
+		unlock()
+		return nil, nil, nil, nil, errOwnerOnly
+	}
 	return m, a, t, unlock, nil
 }
 
@@ -600,7 +604,7 @@ func (s *service) storeSentDraft(ctx context.Context, a *accountRow, raw []byte,
 	}
 	thread := draft.ThreadID
 	in := &newMessage{RemoteID: remote, ThreadRemoteID: ref.ThreadRemoteID, Raw: raw, Date: time.Now(),
-		State: state{FolderIDs: folders, Location: ref.Location}, SentBy: &by, ThreadID: &thread}
+		State: state{FolderIDs: folders, Location: sentLocation(a, ref)}, SentBy: &by, ThreadID: &thread}
 	var id uuid.UUID
 	err = p.batch(ctx, func(tx pgx.Tx) error {
 		if err := p.remove(ctx, tx, storedOf(draft)); err != nil {

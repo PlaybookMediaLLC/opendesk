@@ -451,7 +451,7 @@ func (s *service) messageOut(a *accountRow, m *messageRow, sentBy *domain.UserRe
 	}
 	for _, at := range m.Attachments {
 		out.Attachments = append(out.Attachments, MailAttachment{ID: strconv.Itoa(at.Index), Filename: at.Filename, ContentType: at.ContentType,
-			Size: at.Size, Inline: at.Inline, ContentID: at.ContentID, URL: s.attachmentURL(m.ID, at.Index)})
+			Size: at.Size, Inline: at.Inline, ContentID: at.ContentID, URL: s.attachmentURL(m.ID, at.Index), Blocked: at.Blocked})
 	}
 	return out
 }
