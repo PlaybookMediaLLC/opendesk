@@ -5,7 +5,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
+	"github.com/useopendesk/opendesk/internal/crypto"
 	"github.com/useopendesk/opendesk/internal/domain"
 	"github.com/useopendesk/opendesk/internal/helpdesk/hdtest"
 	"github.com/useopendesk/opendesk/internal/helpdesk/tickets"
@@ -27,6 +29,12 @@ func TestVisitorPresence(t *testing.T) {
 	agent := ws.Agent.As(ws)
 
 	var p domain.VisitorPresence
+	// The address an anonymous visitor typed is unconfirmed: no reply is emailed to it.
+	e.Do("GET", path, agent, nil).Want(t, 200).JSON(t, &p)
+	if !p.Chat || !p.Present || p.EmailFollowUp {
+		t.Fatalf("unconfirmed address: %+v", p)
+	}
+	e.Exec(`UPDATE contacts SET email_unconfirmed = false WHERE id = $1`, s.Contact.ID) // as a member's save confirms it
 	e.Do("GET", path, agent, nil).Want(t, 200).JSON(t, &p)
 	if !p.Chat || !p.Present || p.LastSeenAt == nil || p.AwayAfterSeconds != 120 || !p.EmailFollowUp {
 		t.Fatalf("on the page: %+v", p)
@@ -90,5 +98,62 @@ func TestVisitorComeback(t *testing.T) {
 	}
 	if !widget.Comeback(c, now.Add(time.Minute+domain.ChatAwayAfter)) {
 		t.Fatal("a request after the away threshold is")
+	}
+}
+
+// Chat replies are emailed only to a confirmed address: a verified visitor's, never one an
+// anonymous visitor typed, until mail comes from it.
+func TestChatFollowUpNeedsConfirmedEmail(t *testing.T) {
+	e := hdtest.New(t, widget.Register, tickets.Register)
+	ws := e.NewWorkspace()
+	sealed, err := e.D.Box.Seal([]byte("s3cret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.Exec(`UPDATE widgets SET secret_enc = $2 WHERE id = $1`, ws.WidgetID, sealed)
+	chats := map[string]uuid.UUID{}
+	followUp := func(s session) bool {
+		t.Helper()
+		id, ok := chats[s.VisitorToken]
+		if !ok {
+			var created struct {
+				Conversation struct {
+					ID uuid.UUID `json:"id"`
+				} `json:"conversation"`
+			}
+			e.Do("POST", "/v1/widget/conversations", hdtest.Auth{Visitor: s.VisitorToken}, map[string]any{"body": "Hello"}).Want(t, 201).JSON(t, &created)
+			id = created.Conversation.ID
+			chats[s.VisitorToken] = id
+		}
+		e.Exec(`UPDATE widget_sessions SET last_seen_at = now() - interval '3 minutes' WHERE contact_id = $1`, s.Contact.ID)
+		var p domain.VisitorPresence
+		e.Do("GET", "/v1/tickets/"+id.String()+"/visitor-presence", ws.Agent.As(ws), nil).Want(t, 200).JSON(t, &p)
+		return p.EmailFollowUp
+	}
+	anon := start(t, e, map[string]any{"key": ws.WidgetKey, "email": "someone@corp.example"})
+	if anon.Contact.Email == nil || *anon.Contact.Email != "someone@corp.example" || followUp(anon) {
+		t.Fatalf("anonymous visitor's typed address: %+v", anon.Contact)
+	}
+	// Mail from the address confirms it.
+	err = e.D.DB.Tx(e.Ctx, func(tx pgx.Tx) error {
+		_, _, err := domain.UpsertContactByEmail(e.Ctx, tx, ws.ID, "someone@corp.example", "Someone")
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !followUp(anon) {
+		t.Fatal("an address mail came from is still unconfirmed")
+	}
+	// An address given later in an anonymous session is unconfirmed too.
+	later := start(t, e, map[string]any{"key": ws.WidgetKey})
+	start(t, e, map[string]any{"key": ws.WidgetKey, "visitor_token": later.VisitorToken, "email": "later@corp.example"})
+	if followUp(later) {
+		t.Fatal("an address typed later redirects chat replies")
+	}
+	verified := start(t, e, map[string]any{"key": ws.WidgetKey, "user_id": "u-7", "user_hash": crypto.HMACHex([]byte("s3cret"), "u-7"),
+		"email": "member@corp.example"})
+	if !followUp(verified) {
+		t.Fatal("a verified visitor's address is not emailed")
 	}
 }
