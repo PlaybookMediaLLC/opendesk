@@ -155,7 +155,9 @@ Sessions and tokens
   gateway reads no query token), public token lookups and CSAT take a body. `/v1/`
   responses are `no-store` unless their route says otherwise.
 - Every credential (API key, person, widget visitor) is rate limited across the API
-  (`httpx.CredentialLimit`, `RateLimit-*` headers); unresolved credentials per address.
+  (`httpx.CredentialLimit`, `RateLimit-*` headers); unresolved credentials per address. An API
+  key's limit counts in Postgres for the whole instance (`d.Limiter.SharedTake`); people's and
+  visitors' count per API process.
 
 Access control
 - Every workspace-owned row is read and written with `workspace_id = $1` from the

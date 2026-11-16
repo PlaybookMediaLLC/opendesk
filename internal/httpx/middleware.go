@@ -252,8 +252,9 @@ func forwardedFor(r *http.Request, hops int) string {
 }
 
 // Limiter is a fixed-window rate limiter keyed by string. Allow counts in memory, per
-// process; Shared counts in Postgres once UseDB is set, across every API process and
-// restarts, for the per-account limits on sign-in factors (ASVS 2.2.1).
+// process; Shared and SharedTake count in Postgres once UseDB is set, across every API
+// process and restarts: the per-account limits on sign-in factors (ASVS 2.2.1) and the
+// per-API-key request limits.
 type Limiter struct {
 	mu      sync.Mutex
 	windows map[string]*window
@@ -262,8 +263,9 @@ type Limiter struct {
 }
 
 type window struct {
-	start time.Time
-	count int
+	start  time.Time
+	period time.Duration
+	count  int
 }
 
 func NewLimiter() *Limiter {
@@ -271,8 +273,9 @@ func NewLimiter() *Limiter {
 	go func() {
 		for range time.Tick(time.Minute) {
 			l.mu.Lock()
+			// A window is forgotten only once its own period is over, however long that is.
 			for k, w := range l.windows {
-				if time.Since(w.start) > time.Hour {
+				if time.Since(w.start) > w.period {
 					delete(l.windows, k)
 				}
 			}
@@ -288,7 +291,7 @@ func (l *Limiter) Allow(key string, limit int, period time.Duration) bool {
 	defer l.mu.Unlock()
 	w, ok := l.windows[key]
 	if !ok || time.Since(w.start) > period {
-		w = &window{start: time.Now()}
+		w = &window{start: time.Now(), period: period}
 		l.windows[key] = w
 	}
 	w.count++
@@ -312,7 +315,7 @@ func (l *Limiter) Take(key string, limit int, period time.Duration) (ok bool, re
 	defer l.mu.Unlock()
 	w, found := l.windows[key]
 	if !found || time.Since(w.start) > period {
-		w = &window{start: time.Now()}
+		w = &window{start: time.Now(), period: period}
 		l.windows[key] = w
 	}
 	w.count++
@@ -356,12 +359,21 @@ func CredentialLimit(l *Limiter, clientIP func(*http.Request) string) func(http.
 			default:
 				id = "user:" + p.UserID.String()
 			}
+			// An API key's limits count for the whole instance (Postgres), however many API
+			// processes its requests reach; a person's, a visitor's and a customer's count in
+			// each process, so a browser's page loads put no write on the database.
+			take := l.Take
+			if p.Kind == auth.KindAPIKey {
+				take = func(key string, limit int, period time.Duration) (bool, int, time.Duration) {
+					return l.SharedTake(r.Context(), key, limit, period)
+				}
+			}
 			limit := credentialRequestsPerMinute
-			ok, remaining, reset := l.Take("api:"+id, limit, time.Minute)
+			ok, remaining, reset := take("api:"+id, limit, time.Minute)
 			if ok && r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
 				var wRemaining int
 				var wReset time.Duration
-				if ok, wRemaining, wReset = l.Take("api:write:"+id, credentialWritesPerMinute, time.Minute); wRemaining < remaining {
+				if ok, wRemaining, wReset = take("api:write:"+id, credentialWritesPerMinute, time.Minute); wRemaining < remaining {
 					limit, remaining, reset = credentialWritesPerMinute, wRemaining, wReset
 				}
 			}
@@ -388,25 +400,34 @@ func (l *Limiter) UseDB(pool *pgxpool.Pool, log *slog.Logger) {
 // Shared records a hit and reports whether key is within limit per period, counted for
 // the whole instance. Without a database, or when the write fails, it counts in memory.
 func (l *Limiter) Shared(ctx context.Context, key string, limit int, period time.Duration) bool {
+	ok, _, _ := l.SharedTake(ctx, key, limit, period)
+	return ok
+}
+
+// SharedTake is Take counted for the whole instance, like Shared: it records a hit and
+// reports whether key is within limit, what is left of the window and when it ends.
+// Without a database, or when the write fails, it counts in memory.
+func (l *Limiter) SharedTake(ctx context.Context, key string, limit int, period time.Duration) (ok bool, remaining int, reset time.Duration) {
 	l.mu.Lock()
 	pool, log := l.db, l.log
 	l.mu.Unlock()
 	if pool == nil {
-		return l.Allow(key, limit, period)
+		return l.Take(key, limit, period)
 	}
 	var count int
+	var left float64
 	err := pool.QueryRow(context.WithoutCancel(ctx), `INSERT INTO auth_throttle (key, window_start, count) VALUES ($1, now(), 1)
 		ON CONFLICT (key) DO UPDATE SET
 			count = CASE WHEN auth_throttle.window_start <= now() - make_interval(secs => $2) THEN 1 ELSE auth_throttle.count + 1 END,
 			window_start = CASE WHEN auth_throttle.window_start <= now() - make_interval(secs => $2) THEN now() ELSE auth_throttle.window_start END
-		RETURNING count`, crypto.HashToken(key), period.Seconds()).Scan(&count)
+		RETURNING count, extract(epoch FROM window_start + make_interval(secs => $2) - now())::float8`, crypto.HashToken(key), period.Seconds()).Scan(&count, &left)
 	if err != nil {
 		if log != nil {
 			log.Error("shared rate limit", "err", err)
 		}
-		return l.Allow(key, limit, period)
+		return l.Take(key, limit, period)
 	}
-	return count <= limit
+	return count <= limit, max(limit-count, 0), max(time.Duration(left*float64(time.Second)), 0)
 }
 
 // RateLimited is the 429 every throttled route returns.

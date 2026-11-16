@@ -41,7 +41,9 @@ it exists, and this file is the contract the parts are built against.
   `Idempotent-Replayed: true`; a different body or route is `422 idempotency_key_reused`, a retry while the first
   is running `409 idempotency_in_progress`. `5xx`, `429`, streamed and >1 MiB responses are not stored. Not
   applied to `/v1/auth/*`, `/v1/me/password`, `/v1/me/passkeys/register/*`, `/v1/realtime/token`, inbound, Stripe, widget and public routes.
-- Rate limits: `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` headers.
+- Rate limits: `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` headers. Per credential, 1200 requests a
+  minute and 600 writes. An API key's count is the instance's (Postgres, `auth_throttle`), whichever API process
+  answers; a person's, a visitor's and a customer's count in each API process.
 - Roles: `owner` > `admin` > `agent` > `viewer`. Viewers read only. Settings routes
   (mailboxes, members, api keys, webhooks, automations, sla, business hours, assignment, triage, widget settings, labels, label groups, custom fields, workspace images) need `admin`.
 - API key scopes: `tickets:read`, `tickets:write`, `contacts:read`, `contacts:write`,
