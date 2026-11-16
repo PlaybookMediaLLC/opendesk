@@ -18,6 +18,7 @@ import { CompanyGlyph } from "@/components/contacts/bits";
 import { useRecordFields } from "@/components/contacts/LabelsAndFields";
 import { FieldsSection } from "@/components/tickets/detail/FieldsSection";
 import type { BulkResult, CompanyBulkQuery, ContactBulkQuery, DirectoryBulkPatch } from "@/lib/api/endpoints";
+import { bindWorkspace } from "@/lib/api/client";
 import { api } from "@/lib/api/endpoints";
 import type { CustomField, FieldValue, LabelScope } from "@/lib/api/types";
 import { springs } from "@/lib/motion";
@@ -283,9 +284,10 @@ function InviteAction({ ids, onDone }: { ids: string[]; onDone: () => void }) {
   const from = (brands ?? []).filter((b) => b.help_center.enabled && b.portal_auth.mode !== "oidc");
   const send = useMutation({
     mutationFn: async (brandId?: string) => {
+      const here = bindWorkspace();
       const total = { sent: 0, skipped: 0 };
       for (let i = 0; i < ids.length; i += CHUNK) {
-        const r = await api.contacts.invitePortalBulk(ids.slice(i, i + CHUNK), brandId);
+        const r = await here(() => api.contacts.invitePortalBulk(ids.slice(i, i + CHUNK), brandId));
         total.sent += r.sent;
         total.skipped += Object.values(r.skipped).reduce((a, b) => a + (b ?? 0), 0);
       }

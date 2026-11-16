@@ -1154,5 +1154,14 @@
   "wiki": {
     "title": "Wiki",
     "untitled": "Ohne Titel"
+  },
+  "ticketActions": {
+    "updateFailed": "Das Ticket konnte nicht aktualisiert werden",
+    "bulkUpdateFailed": "Diese Tickets konnten nicht aktualisiert werden",
+    "dismissFailed": "Der Vorschlag konnte nicht verworfen werden",
+    "requiredFields": "Fülle die Pflichtfelder aus, bevor du löst",
+    "requiredFieldsBulk": "Einige Tickets haben Pflichtfelder, die vor dem Lösen ausgefüllt werden müssen",
+    "labelsAdminOnly": "Nur Admins können Labels erstellen. Wähle ein vorhandenes.",
+    "notSent": "Nicht gesendet"
   }
 }

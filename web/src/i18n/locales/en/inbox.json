@@ -1158,5 +1158,14 @@
   "wiki": {
     "title": "Wiki",
     "untitled": "Untitled"
+  },
+  "ticketActions": {
+    "updateFailed": "Couldn't update the ticket",
+    "bulkUpdateFailed": "Couldn't update those tickets",
+    "dismissFailed": "Couldn't dismiss the suggestion",
+    "requiredFields": "Fill in the required fields before solving",
+    "requiredFieldsBulk": "Some tickets have required fields to fill in before solving",
+    "labelsAdminOnly": "Only admins can create labels. Pick an existing one.",
+    "notSent": "Not sent"
   }
 }

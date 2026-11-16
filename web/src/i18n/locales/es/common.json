@@ -7,7 +7,13 @@
     "apply": "Aplicar",
     "copy": "Copiar",
     "back": "Atrás",
-    "continue": "Continuar"
+    "continue": "Continuar",
+    "undo": "Deshacer"
   },
-  "aboutCost": "aprox. {{cost}}"
+  "aboutCost": "aprox. {{cost}}",
+  "errors": {
+    "generic": "Algo salió mal",
+    "network": "No se puede conectar con el servidor. Comprueba tu conexión.",
+    "rateLimited": "Demasiados intentos. Espera un momento y vuelve a intentarlo."
+  }
 }

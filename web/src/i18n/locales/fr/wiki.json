@@ -1214,6 +1214,13 @@
     "readOnly": "Lecture seule",
     "saveFailed": "Impossible d’enregistrer le canvas",
     "saveStopped": "Ce canvas ne peut plus être enregistré. Il a été supprimé, ou vous ne pouvez plus le modifier.",
+    "conflict": {
+      "title": "Quelqu’un d’autre a modifié ce canvas.",
+      "titleBy": "{{name}} a modifié ce canvas.",
+      "body_one": "Leurs modifications et les vôtres sont toutes là, sauf une carte que vous avez modifiée tous les deux, qui montre la vôtre. Gardez la vôtre, ou chargez leur version.",
+      "body_many": "Leurs modifications et les vôtres sont toutes là, sauf {{count}} cartes que vous avez modifiées tous les deux, qui montrent les vôtres. Gardez les vôtres, ou chargez leur version.",
+      "body_other": "Leurs modifications et les vôtres sont toutes là, sauf {{count}} cartes que vous avez modifiées tous les deux, qui montrent les vôtres. Gardez les vôtres, ou chargez leur version."
+    },
     "uploadFailed": "Impossible d’envoyer le fichier",
     "full": "Un canvas contient jusqu’à 2 000 cartes.",
     "format": {

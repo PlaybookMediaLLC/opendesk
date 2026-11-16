@@ -80,7 +80,8 @@ export function openOutside(url: string) {
   if (safe) void shell.openExternal(safe);
 }
 
-function isAllowed(url: string, instance: Instance) {
+/** In-window navigation stays on the instance's app and API origins. */
+export function isAllowed(url: string, instance: Pick<Instance, "appOrigin" | "apiOrigin">) {
   try {
     const o = new URL(url).origin;
     return o === instance.appOrigin || o === instance.apiOrigin;

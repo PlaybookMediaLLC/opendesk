@@ -1187,6 +1187,12 @@
     "readOnly": "Nur ansehen",
     "saveFailed": "Das Canvas konnte nicht gespeichert werden",
     "saveStopped": "Dieses Canvas lässt sich nicht mehr speichern. Es wurde gelöscht, oder du kannst es nicht mehr bearbeiten.",
+    "conflict": {
+      "title": "Jemand anderes hat dieses Canvas geändert.",
+      "titleBy": "{{name}} hat dieses Canvas geändert.",
+      "body_one": "Deine und ihre Änderungen sind beide hier, bis auf eine Karte, die ihr beide geändert habt. Sie zeigt deine. Behalte deine oder lade ihre Version.",
+      "body_other": "Deine und ihre Änderungen sind beide hier, bis auf {{count}} Karten, die ihr beide geändert habt. Sie zeigen deine. Behalte deine oder lade ihre Version."
+    },
     "uploadFailed": "Die Datei konnte nicht hochgeladen werden",
     "full": "Ein Canvas fasst bis zu 2.000 Karten.",
     "format": {

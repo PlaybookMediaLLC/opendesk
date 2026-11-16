@@ -60,8 +60,10 @@ type pagePatch struct {
 	// A row's values to change, by property id; null takes one away (a database row only).
 	Props json.RawMessage `json:"props,omitempty"`
 	// A canvas's cards and connections, replaced whole (a canvas only).
-	Canvas       json.RawMessage `json:"canvas,omitempty"`
-	VerifiedDays *int            `json:"verified_days,omitempty" minimum:"1" maximum:"3650" doc:"With verified: for how many days; left out, until someone changes it"`
+	Canvas json.RawMessage `json:"canvas,omitempty"`
+	// The canvas_version this canvas edit started from (contracts/wiki.md "Canvas").
+	CanvasVersion *int `json:"canvas_version,omitempty" minimum:"1" doc:"With canvas: the canvas_version the edit started from; a canvas changed since answers 409 canvas_changed. Left out, the canvas is replaced as it is"`
+	VerifiedDays  *int `json:"verified_days,omitempty" minimum:"1" maximum:"3650" doc:"With verified: for how many days; left out, until someone changes it"`
 	// Other names the page goes by, replaced whole (contracts/wiki.md "Aliases"): never needs the version.
 	Aliases *[]string `json:"aliases,omitempty" maxItems:"10" doc:"Up to 10 of 100 characters; [] removes them"`
 }
@@ -400,7 +402,7 @@ func registerPages(d *deps.Deps, api huma.API) {
 				if err != nil {
 					return err
 				}
-				canvasChanged, err := applyCanvas(ctx, tx, v, p, id, b.Canvas)
+				canvasChanged, err := applyCanvas(ctx, tx, v, p, id, b.Canvas, b.CanvasVersion)
 				if err != nil {
 					return err
 				}
@@ -431,8 +433,9 @@ func registerPages(d *deps.Deps, api huma.API) {
 					}
 				}
 				if canvasChanged {
-					// A canvas has no version either: viewers take it as it comes.
+					// A canvas has its own version: a tab with unsaved cards compares it before taking the canvas.
 					canvasEventData(data, pg.Canvas)
+					data["canvas_version"] = pg.CanvasVersion
 				}
 				if aliasesChanged {
 					// Nor do aliases.

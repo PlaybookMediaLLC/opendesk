@@ -1,7 +1,9 @@
-// PostHog, only when a key is configured. Autocapture and route pageviews;
-// session replay masks every input and anything marked data-ph-mask or
-// .ph-no-capture (ticket and message bodies). Custom properties never carry
-// PII: ids and enums only.
+// PostHog, only when a key is configured. Autocapture and route pageviews. Everything is
+// masked unless it is marked safe: session replay masks every input and all text, except
+// text inside [data-ph-unmask] (the app's own fixed labels, never content), and anything
+// under data-ph-mask or .ph-no-capture stays masked even there. Pictures, video and frames
+// are left out of replays. Autocapture sends no element text and no attributes. Custom
+// properties never carry PII: ids and enums only.
 
 import type { PostHog } from "posthog-js/dist/module.full.no-external";
 import { config } from "./config";
@@ -31,6 +33,20 @@ export function sanitize(props: Record<string, unknown>): Record<string, unknown
   return props;
 }
 
+/** Text replay may keep: the marker nearest to it decides, and masked is the default. */
+export const UNMASK = "[data-ph-unmask]";
+const MASK_OR_UNMASK = `[data-ph-mask], .ph-no-capture, ${UNMASK}`;
+
+/** Session replay's text: kept under data-ph-unmask (with no mask closer), stars otherwise. */
+export function maskText(text: string, el?: Element | null): string {
+  const marker = el?.closest(MASK_OR_UNMASK);
+  if (marker?.matches(UNMASK)) return text;
+  return text.replace(/\S/g, "*");
+}
+
+/** What session replay leaves out entirely: pictures, video and frames (mail and embeds). */
+export const REPLAY_BLOCK = "img, picture, video, iframe, object, embed, .ph-no-capture";
+
 export async function initAnalytics() {
   if (!config.posthogKey || ph) return;
   // A page opened from a one-time link (reset, invite, verify, OAuth) starts analytics
@@ -52,11 +68,17 @@ export async function initAnalytics() {
     person_profiles: "identified_only",
     mask_personal_data_properties: true,
     disable_external_dependency_loading: true,
-    mask_all_text: false,
+    // Autocapture: which element was clicked, never what it says or holds.
+    mask_all_text: true,
+    mask_all_element_attributes: true,
     session_recording: {
       maskAllInputs: true,
-      maskTextSelector: "[data-ph-mask], .ph-no-capture",
-      blockSelector: ".ph-no-capture img",
+      // Every text node goes through maskText: only data-ph-unmask keeps its words.
+      maskTextSelector: "*",
+      maskTextFn: (text, el) => maskText(text, el),
+      blockSelector: REPLAY_BLOCK,
+      recordHeaders: false,
+      recordBody: false,
     },
     // URLs can carry tokens (reset, invite, verify, OAuth codes): drop every query.
     sanitize_properties: (props) => sanitize(props) as typeof props,

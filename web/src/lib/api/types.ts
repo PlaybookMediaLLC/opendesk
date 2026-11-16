@@ -2008,6 +2008,8 @@ export type WikiPage = WikiNode &
   database: Database | null;
   /** A canvas's cards and connections; null for a page (contracts/wiki.md "Canvas"). */
   canvas?: Canvas | null;
+  /** A canvas's own version, +1 on every change of its cards or connections ("Canvas"). */
+  canvas_version?: number;
   props: Record<string, DbValue>;
   verification: WikiVerification | null;
   /** In the trash since; null for a page in the tree. */
@@ -2051,7 +2053,7 @@ export type WikiSearchHit = {
   area?: WikiArea;
 };
 
-export type WikiPagePatch = Partial<WikiPageSettings> & { title?: string; icon?: string; body_html?: string; version?: number; verified?: boolean; verified_days?: number; database?: Database; props?: Record<string, DbValue>; canvas?: Canvas; aliases?: string[] };
+export type WikiPagePatch = Partial<WikiPageSettings> & { title?: string; icon?: string; body_html?: string; version?: number; verified?: boolean; verified_days?: number; database?: Database; props?: Record<string, DbValue>; canvas?: Canvas; canvas_version?: number; aliases?: string[] };
 
 export type ReportsOverview = {
   created: number;

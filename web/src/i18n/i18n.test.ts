@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AGENT_LOCALES, i18n, inSentence, intlLocale, isPublicPath, loadAgentCatalogs, matchLocale, pickAgentLocale, pickLocale, resetLocale, RTL, setLocale, SUPPORTED } from "./index";
+import indexSource from "./index.ts?raw";
 import { NAMESPACES } from "./resources";
 
 const files = import.meta.glob<Record<string, unknown>>("./locales/*/*.json", { eager: true, import: "default" });
@@ -63,7 +64,9 @@ describe("loading", () => {
   });
 
   it("boots with common only and keeps the agent catalogs off public pages", async () => {
-    expect(i18n.options.ns).toEqual(["common"]);
+    // Only English common is bundled; every other catalog, English too, loads when asked for.
+    const imports = [...indexSource.matchAll(/^import .* from "(.+)";$/gm)].map((m) => m[1]);
+    expect(imports.filter((p) => p.startsWith("./"))).toEqual(["./locales/en/common.json", "./namespaces"]);
     await setLocale("fr", ["public", "common"]);
     expect(i18n.hasResourceBundle("fr", "public")).toBe(true);
     for (const ns of NAMESPACES.filter((ns) => ns !== "common" && ns !== "public")) expect(i18n.hasResourceBundle("fr", ns), ns).toBe(false);

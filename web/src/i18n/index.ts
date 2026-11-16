@@ -1,11 +1,11 @@
 // i18n: i18next with one JSON catalog per namespace and language under
-// ./locales/<lng>/<ns>.json. English is bundled; another language loads a
-// namespace at a time, when something asks for it: a public page loads the
-// namespaces it shows (setLocale), the agent app loads its catalogs before its
-// first route renders (loadAgentCatalogs, from the root route), and a component
-// reading a namespace that is not there yet loads it (useTranslation). Boot
-// itself loads only `common`, so a help center or CSAT visitor never downloads
-// the agent app's catalogs.
+// ./locales/<lng>/<ns>.json. Only English `common` is bundled; every other catalog,
+// English included, loads a namespace at a time, when something asks for it: a public
+// page loads the namespaces it shows (setLocale), the agent app loads all of its
+// catalogs before its first route renders (loadAgentCatalogs, started at boot and
+// awaited by the root route), and a component reading a namespace that is not there yet
+// loads it (useTranslation). So a help center, portal or CSAT visitor never downloads
+// the agent app's catalogs, in English or any language.
 //
 // The agent app ships English, French and German (AGENT_LOCALES), following the
 // browser's language. A key a translation does not have yet falls back to
@@ -15,7 +15,8 @@
 
 import i18n, { type BackendModule, type ReadCallback } from "i18next";
 import { initReactI18next } from "react-i18next";
-import { en, NAMESPACES, type Namespace } from "./resources";
+import common from "./locales/en/common.json";
+import { NAMESPACES, type Namespace } from "./namespaces";
 
 export const SUPPORTED = ["en", "es", "fr", "de", "pt", "it", "nl", "pl", "cs", "ja", "zh-CN", "ko", "tr", "az", "ar"] as const;
 export type Locale = (typeof SUPPORTED)[number];
@@ -70,7 +71,10 @@ export function pickAgentLocale(browser?: readonly string[]): AgentLocale {
   return (AGENT_LOCALES as readonly string[]).includes(lng) ? (lng as AgentLocale) : "en";
 }
 
-const loaders = import.meta.glob<{ default: Record<string, unknown> }>(["./locales/*/*.json", "!./locales/en/*.json"]);
+const loaders = import.meta.glob<{ default: Record<string, unknown> }>(["./locales/*/*.json", "!./locales/en/common.json"]);
+
+/** The namespaces public pages show: their own, and the shared controls'. */
+export const PUBLIC_NAMESPACES: Namespace[] = ["public", "common", "ui"];
 
 const lazyBackend: BackendModule = {
   type: "backend",
@@ -95,7 +99,7 @@ void i18n
     // Only what every page reads loads at boot; the rest load on demand (see the top).
     ns: ["common"],
     defaultNS: "common",
-    resources: { en },
+    resources: { en: { common } },
     partialBundledLanguages: true,
     interpolation: { escapeValue: false },
     returnNull: false,
@@ -105,20 +109,22 @@ void i18n
 const agentLoads = new Map<string, Promise<void>>();
 
 /**
- * Load the agent app's catalogs in its language, all at once, so its pages and
- * the strings read outside React (`i18n.t`) render translated from the first
- * paint. English is bundled. A namespace that fails to load stays English and
- * is tried again on the next call.
+ * Load the agent app's catalogs in its language, with English under them (the
+ * fallback), all at once, so its pages and the strings read outside React
+ * (`i18n.t`) render translated from the first paint. A namespace that fails to
+ * load is tried again on the next call.
  */
 export function loadAgentCatalogs(lng: string = pickAgentLocale()): Promise<void> {
-  if (lng === "en") return Promise.resolve();
   let pending = agentLoads.get(lng);
   if (!pending) {
+    const langs = lng === "en" ? ["en"] : [lng, "en"];
     pending = Promise.allSettled(
-      NAMESPACES.filter((ns) => !i18n.hasResourceBundle(lng, ns) && loaders[`./locales/${lng}/${ns}.json`]).map(async (ns) => {
-        const m = await loaders[`./locales/${lng}/${ns}.json`]();
-        i18n.addResourceBundle(lng, ns, m.default, true, false);
-      }),
+      langs.flatMap((l) =>
+        NAMESPACES.filter((ns) => !i18n.hasResourceBundle(l, ns) && loaders[`./locales/${l}/${ns}.json`]).map(async (ns) => {
+          const m = await loaders[`./locales/${l}/${ns}.json`]();
+          i18n.addResourceBundle(l, ns, m.default, true, false);
+        }),
+      ),
     ).then((results) => {
       if (results.some((r) => r.status === "rejected")) agentLoads.delete(lng);
     });
@@ -174,6 +180,10 @@ export function resetLocale() {
 }
 
 resetLocale();
+
+// The agent app's catalogs start loading with the app itself, beside its first requests;
+// the root route waits for them. A public page never asks for them.
+if (typeof location !== "undefined" && !import.meta.env.VITEST && !isPublicPath(location.pathname)) void loadAgentCatalogs();
 
 /**
  * The language the app shows, as a lowercase base tag ("en", "fr", "de"): what a server that

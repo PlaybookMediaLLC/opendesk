@@ -7,7 +7,13 @@
     "apply": "Uygula",
     "copy": "Kopyala",
     "back": "Geri",
-    "continue": "Devam"
+    "continue": "Devam",
+    "undo": "Geri al"
   },
-  "aboutCost": "yaklaşık {{cost}}"
+  "aboutCost": "yaklaşık {{cost}}",
+  "errors": {
+    "generic": "Bir şeyler ters gitti",
+    "network": "Sunucuya ulaşılamıyor. Bağlantınızı kontrol edin.",
+    "rateLimited": "Çok fazla deneme. Biraz bekleyip tekrar deneyin."
+  }
 }

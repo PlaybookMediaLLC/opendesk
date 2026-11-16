@@ -7,7 +7,13 @@
     "apply": "Anwenden",
     "copy": "Kopieren",
     "back": "Zurück",
-    "continue": "Weiter"
+    "continue": "Weiter",
+    "undo": "Rückgängig"
   },
-  "aboutCost": "etwa {{cost}}"
+  "aboutCost": "etwa {{cost}}",
+  "errors": {
+    "generic": "Etwas ist schiefgelaufen",
+    "network": "Der Server ist nicht erreichbar. Prüfe deine Verbindung.",
+    "rateLimited": "Zu viele Versuche. Warte kurz und versuche es erneut."
+  }
 }

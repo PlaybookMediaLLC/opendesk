@@ -307,7 +307,7 @@ export function TreeView({
   const top = childrenOf(view, null);
   return (
     <>
-      <div ref={root} role="tree" aria-label={t("tree.label")} onKeyDown={onKeyDown} className="flex flex-col" data-wiki-panel>
+      <div ref={root} role="tree" aria-label={t("tree.label")} onKeyDown={onKeyDown} className="flex flex-col" data-wiki-panel data-ph-mask>
         {rows.map(({ node: n, depth }) => (
           <TreeRow
             key={n.id}

@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { APP_ID, devArg, devInstanceUrl, isDev, PROTOCOL, sandboxDir } from "./env";
 import { buildMenu } from "./menu";
 import { cancelOAuth, finishOAuth, startOAuth } from "./oauth";
+import { linkInArgs, MAX_LINK, openPath, parseLink } from "./links";
 import { appPath, externalUrl, normalizeAddress, resolveInstance } from "./origins";
 import { pickerWindow, registerPickerIpc, showPicker } from "./picker";
 import { clearNotifications, setBadge, showNotification } from "./notify";
@@ -41,26 +42,21 @@ let quitting = false;
 // ─── Deep links ──────────────────────────────────────────────────────────────
 
 function handleLink(raw: string) {
-  if (typeof raw !== "string" || raw.length > 4096 || !raw.toLowerCase().startsWith(`${PROTOCOL}://`)) return;
+  if (typeof raw !== "string" || raw.length > MAX_LINK || !raw.toLowerCase().startsWith(`${PROTOCOL}://`)) return;
   if (!app.isReady()) {
     pendingLinks.push(raw);
     return;
   }
-  let u: URL;
-  try {
-    u = new URL(raw);
-  } catch {
-    return;
-  }
   // opendesk://auth/callback?code=…  and  opendesk://open?path=/tickets/…
-  const target = `${u.hostname}${u.pathname}`.replace(/\/+$/, "");
-  if (target === "auth/callback") {
-    finishOAuth(u);
+  const link = parseLink(raw);
+  if (!link) return;
+  if (link.kind === "auth") {
+    finishOAuth(link.url);
     reveal(current?.win);
     return;
   }
-  if (target === "open" && current) {
-    const p = appPath(u.searchParams.get("path"), current.instance.appOrigin);
+  if (link.kind === "open" && current) {
+    const p = openPath(link, current.instance.appOrigin);
     if (p) current.navigate(p);
     reveal(current.win);
     return;
@@ -74,7 +70,7 @@ app.on("open-url", (e, url) => {
 });
 
 app.on("second-instance", (_e, argv) => {
-  const link = argv.find((a) => a.toLowerCase().startsWith(`${PROTOCOL}://`));
+  const link = linkInArgs(argv);
   if (link) handleLink(link);
   else reveal(current?.win ?? pickerWindow());
 });

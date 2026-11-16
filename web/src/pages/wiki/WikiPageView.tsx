@@ -756,7 +756,7 @@ export function PageScreen({
       )}
 
       <div className="flex min-h-0 flex-1">
-        <div ref={setScrollEl} data-wiki-print className={cn("min-h-0 min-w-0 flex-1 overflow-y-auto", live.font !== "default" && `wiki-font-${live.font}`, live.small_text && "wiki-small")}>
+        <div ref={setScrollEl} data-wiki-print data-ph-mask className={cn("min-h-0 min-w-0 flex-1 overflow-y-auto", live.font !== "default" && `wiki-font-${live.font}`, live.small_text && "wiki-small")}>
           <PageCover cover={live.cover} coverY={live.cover_y} canEdit={canWrite} onChange={look.set} />
           <article className={cn("mx-auto w-full px-6 pb-32 md:px-10", wide ? "max-w-none md:px-16" : live.full_width ? "max-w-none md:px-24" : "max-w-[760px]", live.cover ? "pt-6" : "pt-10 md:pt-14")}>
             {live.daily_date && (

@@ -8,7 +8,7 @@ import { Check, Globe } from "lucide-react";
 import { Popover } from "radix-ui";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { LOCALE_NAMES, pickLocale, resetLocale, setLocale, SUPPORTED, type Locale } from "@/i18n";
+import { LOCALE_NAMES, pickLocale, PUBLIC_NAMESPACES, resetLocale, setLocale, SUPPORTED, type Locale } from "@/i18n";
 import { floatingPanel } from "@/components/ui/popover";
 import { cn } from "@/lib/cn";
 
@@ -52,7 +52,7 @@ export function usePublicLocale(workspaceDefault: string | null | undefined, rea
   useEffect(() => {
     if (!lng) return;
     let live = true;
-    void setLocale(lng, ["public", "common"]).then(() => live && setApplied(lng));
+    void setLocale(lng, PUBLIC_NAMESPACES).then(() => live && setApplied(lng));
     return () => {
       live = false;
     };

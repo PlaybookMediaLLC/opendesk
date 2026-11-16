@@ -1,5 +1,7 @@
-// The English catalogs, bundled. Add a namespace here, in NAMESPACES, and as
-// locales/en/<ns>.json; i18next.d.ts derives the typed keys from this object.
+// The English catalogs, as one object: i18next.d.ts derives the typed keys from it. The app
+// never imports it at run time (English loads a namespace at a time, like every language;
+// see ./index.ts). Add a namespace here, in NAMESPACES (./namespaces), and as
+// locales/en/<ns>.json.
 
 import agent from "./locales/en/agent.json";
 import agentQuality from "./locales/en/agentQuality.json";
@@ -36,5 +38,4 @@ import wiki from "./locales/en/wiki.json";
 import workspaces from "./locales/en/workspaces.json";
 
 export const en = { common, billing, collab, ai, agent, agentQuality, bots, aiSetup, aiTicket, assistant, public: pub, shell, settings, settingsInbox, settingsDev, settingsChannels, settingsTeams, emailDesign, contacts, kb, mailCategories, reports, inbox, indicators, navigation, auth, ui, imports, setup, shortcuts, spaces, wiki, workspaces } as const;
-export const NAMESPACES = ["common", "billing", "collab", "ai", "agent", "agentQuality", "bots", "aiSetup", "aiTicket", "assistant", "public", "shell", "settings", "settingsInbox", "settingsDev", "settingsChannels", "settingsTeams", "emailDesign", "contacts", "kb", "mailCategories", "reports", "inbox", "indicators", "navigation", "auth", "ui", "imports", "setup", "shortcuts", "spaces", "wiki", "workspaces"] as const;
-export type Namespace = (typeof NAMESPACES)[number];
+export { NAMESPACES, type Namespace } from "./namespaces";

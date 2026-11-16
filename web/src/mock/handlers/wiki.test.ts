@@ -882,6 +882,34 @@ describe("mock wiki canvases", () => {
     applyWikiEvent(qc, "updated", { wiki_page: node, updated_by: { id: "other" }, canvas_changed: true });
     expect(qc.getQueryState(qk.wikiPage("c"))?.isInvalidated).toBe(true);
   });
+
+  it("refuses a canvas save made from an older canvas_version", async () => {
+    const made = (await call("POST", "/v1/wiki/pages", { title: "Board", kind: "canvas" })).body as WikiPage;
+    expect(made.canvas_version).toBe(1);
+    const mine = { nodes: [card("a", "text", { html: "<p>A</p>" })], edges: [] };
+    const theirs = { nodes: [card("b", "text", { html: "<p>B</p>" })], edges: [] };
+    const saved = (await call("PATCH", `/v1/wiki/pages/${made.id}`, { canvas: mine, canvas_version: 1 })).body as WikiPage;
+    expect(saved.canvas_version).toBe(2);
+    expect(await call("PATCH", `/v1/wiki/pages/${made.id}`, { canvas: theirs, canvas_version: 1 })).toMatchObject({ status: 409, body: { code: "canvas_changed" } });
+    // The same cards from an old version are no conflict; the current version saves.
+    expect((await call("PATCH", `/v1/wiki/pages/${made.id}`, { canvas: mine, canvas_version: 1 })).status).toBe(200);
+    expect(((await call("PATCH", `/v1/wiki/pages/${made.id}`, { canvas: theirs, canvas_version: 2 })).body as WikiPage).canvas_version).toBe(3);
+  });
+
+  it("takes an event's canvas only when it is newer than the cached one", () => {
+    const qc = new QueryClient();
+    const node: WikiNode = { id: "c", parent_id: null, title: "c", icon: "", position: 0, version: 1, updated_at: "2026-10-01T00:00:00Z", created_by_id: null, tags: [], kind: "canvas" };
+    const fresh = { nodes: [{ id: "n", type: "text", html: "<p>new</p>", x: 0, y: 0, width: 100, height: 100 }], edges: [] };
+    const page = { ...DEFAULT_LOOK, ...node, body_html: "", breadcrumbs: [], children: [], created_at: "", created_by: null, updated_by: null, verification: null, deleted_at: null, deleted_by: null, kind: "canvas", database: null, props: {}, canvas: fresh, canvas_version: 5 } as WikiPage;
+    qc.setQueryData(qk.wikiPage("c"), page);
+    const old = { nodes: [], edges: [] };
+    applyWikiEvent(qc, "updated", { wiki_page: node, updated_by: { id: "other" }, canvas: old, canvas_version: 4 });
+    expect(qc.getQueryData<WikiPage>(qk.wikiPage("c"))?.canvas).toEqual(fresh);
+    applyWikiEvent(qc, "updated", { wiki_page: node, updated_by: { id: "other" }, canvas_changed: true, canvas_version: 5 });
+    expect(qc.getQueryState(qk.wikiPage("c"))?.isInvalidated).toBe(false);
+    applyWikiEvent(qc, "updated", { wiki_page: node, updated_by: { id: "other" }, canvas: old, canvas_version: 6 });
+    expect(qc.getQueryData<WikiPage>(qk.wikiPage("c"))).toMatchObject({ canvas: old, canvas_version: 6 });
+  });
 });
 
 describe("mock wiki import and export", () => {

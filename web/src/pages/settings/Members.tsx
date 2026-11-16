@@ -568,7 +568,7 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
     void qc.invalidateQueries({ queryKey: qk.invitations });
     void qc.invalidateQueries({ queryKey: qk.billing, exact: true });
     const sent = pending.length - failed.length;
-    if (sent) toast.success(sent === 1 ? "Invitation sent" : `${sent} invitations sent`);
+    if (sent) toast.success(t("members.invitesSent", { count: sent }));
     if (failed.length) {
       setEmails(failed);
       setText("");

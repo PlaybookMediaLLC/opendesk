@@ -205,5 +205,7 @@
     "automations": "Automations",
     "slaPolicies": "SLA policies",
     "teams": "Teams"
-  }
+  },
+  "removeNamed": "Remove {{name}}",
+  "dialog": "Dialog"
 }

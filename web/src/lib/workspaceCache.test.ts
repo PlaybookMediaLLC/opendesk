@@ -3,7 +3,7 @@
 // realtime event lands in its own workspace's keys whichever one has the focus.
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { __resetClientForTests, http, inWorkspace, setAccessToken, setTransport, setWorkspaceId } from "./api/client";
+import { __resetClientForTests, bindWorkspace, http, inWorkspace, scopeWorkspace, setAccessToken, setTransport, setWorkspaceId } from "./api/client";
 import type { Tag } from "./api/types";
 import { keyBody, keyWorkspace, q, qk } from "./queries";
 import { WorkspaceQueryClient } from "./queryClient";
@@ -97,6 +97,36 @@ describe("workspace-scoped query keys", () => {
     await (opts.mutationFn as () => Promise<unknown>)();
     (opts.onSuccess as () => void)();
     expect(seen).toEqual([A, `ws:${A}`]);
+  });
+
+  it("keeps a mutation's workspace for the requests and keys after an await, once bound", async () => {
+    const seen: (string | null)[] = [];
+    serveTags(seen);
+    const qc = new WorkspaceQueryClient();
+    setWorkspaceId(A);
+    const opts = qc.defaultMutationOptions({
+      mutationFn: async () => {
+        const here = bindWorkspace();
+        await http.get("/v1/tags");
+        // The focus moves while the first request is out.
+        setWorkspaceId(B);
+        await here(() => http.get("/v1/tags"));
+        // Unbound, a step after an await goes to the focus: what bindWorkspace is for.
+        await http.get("/v1/tags");
+        return here(() => qk.tags[0]);
+      },
+    });
+    const key = await (opts.mutationFn as () => Promise<string>)();
+    expect(seen).toEqual([A, A, B]);
+    expect(key).toBe(`ws:${A}`);
+  });
+
+  it("binds the workspace an explicit id names, or the one in scope", () => {
+    setWorkspaceId(A);
+    expect(bindWorkspace(B)(() => scopeWorkspace())).toBe(B);
+    const inB = inWorkspace(B, () => bindWorkspace());
+    expect(inB(() => scopeWorkspace())).toBe(B);
+    expect(scopeWorkspace()).toBe(A);
   });
 
   it("applies a realtime event to its own workspace's keys, not the focus's", () => {

@@ -51,7 +51,7 @@ export function Dialog({
               {description ? (
                 <D.Description className="mt-1 text-[12.5px] leading-[18px] text-fg-3">{description}</D.Description>
               ) : (
-                <D.Description className="sr-only">{typeof title === "string" ? title : "Dialog"}</D.Description>
+                <D.Description className="sr-only">{typeof title === "string" ? title : ui("dialog")}</D.Description>
               )}
             </div>
             <div className="-mr-2 -mt-1 flex shrink-0 items-center gap-0.5">

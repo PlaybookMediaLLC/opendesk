@@ -1,8 +1,9 @@
 // Collab hooks: the feature gate, accounts, the sidebar prefs (saved optimistically)
 // and thread actions with rollback.
 
-import { useMutation, useQueries, useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { bindWorkspace } from "../api/client";
 import { api } from "../api/endpoints";
 import type { MailAccount, MailCounts, MailFolder, MailThread, MailThreadAction, Page, SidebarPrefs } from "../api/types";
 import { qk, q, removeFromList, upsertInList } from "../queries";
@@ -154,9 +155,10 @@ export const ACTION_MAX = 100;
 
 /** One request per hundred conversations, so a whole folder selected can be acted on at once. */
 async function actInChunks(v: ThreadActionVars): Promise<{ threads: MailThread[] }> {
+  const here = bindWorkspace();
   const threads: MailThread[] = [];
   for (let i = 0; i < v.ids.length; i += ACTION_MAX) {
-    const r = await api.collab.threads.action({ thread_ids: v.ids.slice(i, i + ACTION_MAX), action: v.action, folder_id: v.folderId, category: v.category, until: v.until });
+    const r = await here(() => api.collab.threads.action({ thread_ids: v.ids.slice(i, i + ACTION_MAX), action: v.action, folder_id: v.folderId, category: v.category, until: v.until }));
     threads.push(...(r?.threads ?? []));
   }
   return { threads };
@@ -164,22 +166,28 @@ async function actInChunks(v: ThreadActionVars): Promise<{ threads: MailThread[]
 
 export type ThreadActionVars = { ids: string[]; action: MailThreadAction; folderId?: string; category?: string; until?: string };
 
+/** An action on conversations, in the cache at once (and the sidebar's numbers); what to put back if it is refused. */
+function optimisticAction(qc: QueryClient, v: ThreadActionVars) {
+  const snap = snapshotThreads(qc, v.ids);
+  const ids = new Set(v.ids);
+  // The sidebar's numbers follow at once (a conversation opened reads as read there too).
+  const before = cachedThreads(qc, ids);
+  const addresses = Object.fromEntries((qc.getQueryData<MailAccount[]>(qk.mailAccounts) ?? []).filter((a) => aliasesOf(a).length).map((a) => [a.id, ownEmails(a)]));
+  qc.setQueryData<MailCounts>(qk.mailCounts, (c) => (c ? countsAfter(c, before, v.action, cachedFolders(qc), v.folderId, addresses, v.category, v.until) : c));
+  mapThreads(qc, ids, (t) => applyAction(t, v.action, v.folderId, v.category, v.until));
+  dropFromLists(qc, ids, v.action, v.folderId, v.category);
+  return { snap };
+}
+
 /** Applies an action to conversations: in the cache (and the sidebar's numbers) at once, then the API; a refusal puts everything back. */
 export function useThreadAction() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: actInChunks,
     onMutate: async (v) => {
+      const here = bindWorkspace();
       await Promise.all([qc.cancelQueries({ queryKey: qk.mailThreadLists }), qc.cancelQueries({ queryKey: qk.mailCounts })]);
-      const snap = snapshotThreads(qc, v.ids);
-      const ids = new Set(v.ids);
-      // The sidebar's numbers follow at once (a conversation opened reads as read there too).
-      const before = cachedThreads(qc, ids);
-      const addresses = Object.fromEntries((qc.getQueryData<MailAccount[]>(qk.mailAccounts) ?? []).filter((a) => aliasesOf(a).length).map((a) => [a.id, ownEmails(a)]));
-      qc.setQueryData<MailCounts>(qk.mailCounts, (c) => (c ? countsAfter(c, before, v.action, cachedFolders(qc), v.folderId, addresses, v.category, v.until) : c));
-      mapThreads(qc, ids, (t) => applyAction(t, v.action, v.folderId, v.category, v.until));
-      dropFromLists(qc, ids, v.action, v.folderId, v.category);
-      return { snap };
+      return here(() => optimisticAction(qc, v));
     },
     onError: (_e, v, ctx) => {
       if (ctx) restore(qc, ctx.snap);

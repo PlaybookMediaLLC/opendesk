@@ -15,7 +15,7 @@ import { Dialog } from "@/components/ui/dialog";
 import { TextInput } from "@/components/ui/input";
 import { toast } from "@/components/ui/toast";
 import { api } from "@/lib/api/endpoints";
-import { errorMessage } from "@/lib/api/client";
+import { bindWorkspace, errorMessage } from "@/lib/api/client";
 import { q, qk } from "@/lib/queries";
 
 const NONE = "__none";
@@ -58,13 +58,14 @@ function PublishForm({ pageId, pageTitle, onDone, beforePublish }: { pageId: str
 
   const publish = useMutation({
     mutationFn: async () => {
+      const here = bindWorkspace();
       await beforePublish();
-      return api.kb.articles.fromWiki({
+      return here(() => api.kb.articles.fromWiki({
         page_id: pageId,
         title: title.trim(),
         ...(collectionId ? { collection_id: collectionId } : {}),
         ...(multiBrand && !fixedBrand ? { brand_id: brandId } : {}),
-      });
+      }));
     },
     onSuccess: ({ article, left_out }) => {
       void qc.invalidateQueries({ queryKey: qk.of("kb") });

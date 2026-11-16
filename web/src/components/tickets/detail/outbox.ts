@@ -126,7 +126,7 @@ export async function deliver(temp: Message, body: SendMessageBody, me: string, 
   } catch (e) {
     here(() => {
       qc.setQueryData<Message[]>(qk.messages(tid), (old) =>
-        old?.map((x) => (x.id === temp.id ? { ...x, delivery_status: "failed", delivery_error: errorMessage(e, "Not sent") } : x)),
+        old?.map((x) => (x.id === temp.id ? { ...x, delivery_status: "failed", delivery_error: errorMessage(e, i18n.t("inbox:ticketActions.notSent")) } : x)),
       );
       if (prevTicket) patchTicketEverywhere(qc, prevTicket, me);
       if (prevDraft) qc.setQueryData(qk.ticketDraft(tid), prevDraft);

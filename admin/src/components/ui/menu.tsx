@@ -72,9 +72,11 @@ export function MenuItem({
   );
 }
 
+/** One of several that can be on together: announced as checked or not, as web's is. */
 export function MenuCheckItem({ children, checked, onSelect, icon }: { children: ReactNode; checked: boolean; onSelect: () => void; icon?: ReactNode }) {
   return (
-    <M.Item
+    <M.CheckboxItem
+      checked={checked}
       onSelect={(e) => {
         e.preventDefault();
         onSelect();
@@ -84,7 +86,7 @@ export function MenuCheckItem({ children, checked, onSelect, icon }: { children:
       {icon}
       <span className="flex-1 truncate">{children}</span>
       {checked && <Check className="!text-fg" />}
-    </M.Item>
+    </M.CheckboxItem>
   );
 }
 

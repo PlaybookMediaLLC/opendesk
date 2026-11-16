@@ -86,6 +86,8 @@ type Row = WikiPageSettings & {
   kind: "page" | "database" | "canvas";
   /** A canvas's cards and connections; null for a page. */
   canvas: Canvas | null;
+  /** A canvas's own version (1 when left out): +1 on every change of its cards or connections. */
+  canvas_version?: number;
   /** A database's properties and views; null for a page. */
   database: Database | null;
   /** A row's values, by property id. */
@@ -283,6 +285,7 @@ function pageOut(st: State, r: Row): WikiPage {
     database: r.database ? structuredClone(r.database) : null,
     props: structuredClone(r.props),
     canvas: r.canvas ? structuredClone(r.canvas) : null,
+    canvas_version: r.canvas_version ?? 1,
     verification: r.verified_at
       ? { by: userRef(r.verified_by), at: r.verified_at, until: r.verified_until, expired: !!r.verified_until && Date.parse(r.verified_until) < Date.now() }
       : null,
@@ -680,6 +683,9 @@ function registerPages() {
     const verify = verificationPatch(ctx.body);
     const data = dataPatch(ctx, st, r);
     const nextCanvas = canvasPatch(ctx, st, r);
+    // A canvas save names the canvas_version it edited from; one that changes cards saved since is refused.
+    if (nextCanvas && typeof ctx.body.canvas_version === "number" && ctx.body.canvas_version !== (r.canvas_version ?? 1) && canonical(nextCanvas) !== canonical(r.canvas))
+      throw new HttpError(409, "canvas_changed", "Someone else changed this canvas since you opened it. Reload it to see their changes.");
     const nextAliases = "aliases" in ctx.body ? cleanAliases(ctx.body.aliases) : r.aliases;
     const aliasesChanged = nextAliases.join("\u0000") !== r.aliases.join("\u0000");
     if (textChanged) {
@@ -704,8 +710,8 @@ function registerPages() {
         if (r.database) ev.database = structuredClone(r.database);
         else ev.props = structuredClone(r.props);
       }
-      // A canvas has no version either.
-      if (canvasChanged) ev.canvas = structuredClone(r.canvas);
+      // A canvas has its own version.
+      if (canvasChanged) Object.assign(ev, { canvas: structuredClone(r.canvas), canvas_version: r.canvas_version ?? 1 });
       if (aliasesChanged) ev.aliases = [...r.aliases];
       pageEvent(ctx.ws, r, "wiki_page.updated", ev);
     }
@@ -1450,7 +1456,7 @@ function canvasPatch(ctx: Ctx, st: State, r: Row): Canvas | undefined {
 /** Replaces a canvas: keeps the version, moves the last edit. */
 function applyCanvas(r: Row, next: Canvas | undefined): boolean {
   if (!next || canonical(next) === canonical(r.canvas)) return false;
-  Object.assign(r, { canvas: next, updated_by: db.meId, updated_at: nowIso() });
+  Object.assign(r, { canvas: next, canvas_version: (r.canvas_version ?? 1) + 1, updated_by: db.meId, updated_at: nowIso() });
   return true;
 }
 

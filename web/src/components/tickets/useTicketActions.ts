@@ -11,7 +11,8 @@ import { cachedTicket, forgetTicket, patchTicketEverywhere, removeTicketEverywhe
 import { markHidden } from "@/lib/realtime/store";
 import { useSession } from "@/lib/session";
 import { toast } from "@/components/ui/toast";
-import { isApiError } from "@/lib/api/client";
+import { i18n } from "@/i18n";
+import { bindWorkspace, isApiError } from "@/lib/api/client";
 import { focusField, isUnknownLabel, requiredFieldKeys } from "./fields";
 import { replyAddressAfterMove } from "./teams";
 
@@ -112,10 +113,13 @@ export function useUpdateTicket() {
   return useMutation({
     mutationFn: ({ id, patch }: { id: string; patch: TicketPatch; quiet?: boolean }) => api.tickets.update(id, patch),
     onMutate: async ({ id, patch }) => {
+      const here = bindWorkspace();
       await qc.cancelQueries({ queryKey: qk.ticket(id) });
-      const prev = cachedTicket(qc, id);
-      if (prev) patchTicketEverywhere(qc, applyPatch(qc, prev, patch), me);
-      return { prev };
+      return here(() => {
+        const prev = cachedTicket(qc, id);
+        if (prev) patchTicketEverywhere(qc, applyPatch(qc, prev, patch), me);
+        return { prev };
+      });
     },
     onError: (e, _v, ctx) => {
       if (ctx?.prev) patchTicketEverywhere(qc, ctx.prev, me);
@@ -123,14 +127,14 @@ export function useUpdateTicket() {
       const missing = requiredFieldKeys(e);
       if (missing.length) {
         focusField(missing[0]);
-        toast.error(isApiError(e) && e.detail ? e.detail : "Fill in the required fields before solving");
+        toast.error(isApiError(e) && e.detail ? e.detail : i18n.t("inbox:ticketActions.requiredFields"));
         return;
       }
       if (isUnknownLabel(e)) {
-        toast.error(isApiError(e) && e.detail ? e.detail : "Only admins can create labels. Pick an existing one.");
+        toast.error(isApiError(e) && e.detail ? e.detail : i18n.t("inbox:ticketActions.labelsAdminOnly"));
         return;
       }
-      toast.error(e, "Couldn't update the ticket");
+      toast.error(e, i18n.t("inbox:ticketActions.updateFailed"));
     },
     onSuccess: (t, { patch }, ctx) => {
       settle(qc, t, me);
@@ -168,10 +172,10 @@ export function useBulkUpdate() {
     },
     onError: (e, _v, ctx) => {
       ctx?.prev.forEach((t) => patchTicketEverywhere(qc, t, me));
-      if (isUnknownLabel(e)) return void toast.error(isApiError(e) && e.detail ? e.detail : "Only admins can create labels. Pick an existing one.");
+      if (isUnknownLabel(e)) return void toast.error(isApiError(e) && e.detail ? e.detail : i18n.t("inbox:ticketActions.labelsAdminOnly"));
       const missing = requiredFieldKeys(e);
-      if (missing.length) return void toast.error(isApiError(e) && e.detail ? e.detail : "Some tickets have required fields to fill in before solving");
-      toast.error(e, "Couldn't update those tickets");
+      if (missing.length) return void toast.error(isApiError(e) && e.detail ? e.detail : i18n.t("inbox:ticketActions.requiredFieldsBulk"));
+      toast.error(e, i18n.t("inbox:ticketActions.bulkUpdateFailed"));
     },
     onSettled: () => {
       void qc.invalidateQueries({ queryKey: qk.counts });
@@ -227,7 +231,7 @@ export function useDismissSuggestion() {
     },
     onError: (e, _v, ctx) => {
       if (ctx?.prev) patchTicketEverywhere(qc, ctx.prev, me);
-      toast.error(e, "Couldn't dismiss the suggestion");
+      toast.error(e, i18n.t("inbox:ticketActions.dismissFailed"));
     },
   });
 }

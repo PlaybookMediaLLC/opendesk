@@ -7,7 +7,13 @@
     "apply": "Použít",
     "copy": "Kopírovat",
     "back": "Zpět",
-    "continue": "Pokračovat"
+    "continue": "Pokračovat",
+    "undo": "Zpět"
   },
-  "aboutCost": "přibližně {{cost}}"
+  "aboutCost": "přibližně {{cost}}",
+  "errors": {
+    "generic": "Něco se pokazilo",
+    "network": "Nelze se spojit se serverem. Zkontrolujte připojení.",
+    "rateLimited": "Příliš mnoho pokusů. Chvíli počkejte a zkuste to znovu."
+  }
 }

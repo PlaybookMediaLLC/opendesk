@@ -14,7 +14,7 @@ import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "@/components/ui/toast";
 import { api } from "@/lib/api/endpoints";
-import { errorMessage, isApiError } from "@/lib/api/client";
+import { bindWorkspace, errorMessage, isApiError } from "@/lib/api/client";
 import type { Brand, PortalAuthMode, PortalAuthSettings, PortalSsoProtocol } from "@/lib/api/types";
 import { config } from "@/lib/config";
 import { qk, upsertInList } from "@/lib/queries";
@@ -215,11 +215,12 @@ function RelinkRow({ brand }: { brand: Brand }) {
   const [error, setError] = useState<string | null>(null);
   const allow = useMutation({
     mutationFn: async () => {
+      const here = bindWorkspace();
       const wanted = email.trim().toLowerCase();
       const found = await api.contacts.search({ q: wanted, limit: 20 });
       const contact = found.data.find((c) => c.email?.toLowerCase() === wanted);
       if (!contact) throw new Error("no_contact");
-      return api.brands.authorizeRelink(brand.id, contact.id);
+      return here(() => api.brands.authorizeRelink(brand.id, contact.id));
     },
     onSuccess: () => {
       toast.success(t("portalAuth.relinkDone", { email: email.trim() }));

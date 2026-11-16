@@ -53,9 +53,15 @@ export function applyWikiEvent(qc: QueryClient, verb: string, d: Record<string, 
   // Aliases have no version either (contracts/wiki.md "Aliases").
   if (Array.isArray(d.aliases)) qc.setQueryData<WikiPage>(qk.wikiPage(node.id), (old) => (old ? { ...old, aliases: d.aliases as string[] } : old));
   if ("verification" in d) qc.setQueryData<WikiPage>(qk.wikiPage(node.id), (old) => (old ? { ...old, verification: d.verification as WikiPage["verification"] } : old));
-  // A canvas has no version either (contracts/wiki.md "Canvas"): the open canvas takes it when idle.
-  if (d.canvas) qc.setQueryData<WikiPage>(qk.wikiPage(node.id), (old) => (old ? { ...old, canvas: d.canvas as WikiPage["canvas"] } : old));
-  else if (d.canvas_changed) void qc.invalidateQueries({ queryKey: qk.wikiPage(node.id) });
+  // A canvas has its own version (contracts/wiki.md "Canvas"): a canvas older than the cached one
+  // (this tab's own save answered first) is left out; the open canvas takes or merges the rest.
+  const cv = typeof d.canvas_version === "number" ? d.canvas_version : undefined;
+  const newer = (old: WikiPage | undefined) => cv === undefined || old?.canvas_version === undefined || old.canvas_version < cv;
+  if (d.canvas)
+    qc.setQueryData<WikiPage>(qk.wikiPage(node.id), (old) =>
+      old && newer(old) ? { ...old, canvas: d.canvas as WikiPage["canvas"], ...(cv !== undefined ? { canvas_version: cv } : {}) } : old,
+    );
+  else if (d.canvas_changed && newer(qc.getQueryData<WikiPage>(qk.wikiPage(node.id)))) void qc.invalidateQueries({ queryKey: qk.wikiPage(node.id) });
   const page = qc.getQueryData<WikiPage>(qk.wikiPage(node.id));
   // This tab's own saves come back with their answer (the saver has the version already).
   const known = Math.max(page?.version ?? Infinity, openSaver(node.id)?.version ?? 0);

@@ -152,7 +152,12 @@ export class Controller {
   }
 
   async identify(identity: SessionIdentity) {
-    this.identity = { ...this.identity, ...identity };
+    if (otherPerson(this.identity, identity)) {
+      // Someone else signed in on this page: the previous person's session ends, and nothing
+      // of theirs (token, conversations, identity) carries over to the new one.
+      this.forgetVisitor();
+      this.identity = { ...identity };
+    } else this.identity = { ...this.identity, ...identity };
     if (this.s.booting) return; // boot picks it up
     try {
       await this.startSession();
@@ -574,6 +579,16 @@ export class Controller {
     this.emit("message", { conversation_id: tid, body: m.body_text, from: who });
   }
 
+  /** Ends this visitor's session and clears what the widget shows of it. */
+  private forgetVisitor() {
+    this.live?.stop();
+    this.live = null;
+    void this.api.endSession().catch(() => {});
+    this.remember(null);
+    this.api.visitorToken = null;
+    this.set({ session: null, conversations: null, active: null, messages: {}, typing: {}, unread: 0, teaser: null, awaiting: {}, handoff: {}, ratings: {}, actions: {}, view: "home" });
+  }
+
   shutdown() {
     this.stop();
     // The host page signed its user out: end the session on the server too, so the
@@ -592,6 +607,17 @@ export class Controller {
     if (typeof document !== "undefined") document.removeEventListener("visibilitychange", this.onVisible);
     Object.values(this.typingTimers).forEach(clearTimeout);
   }
+}
+
+/**
+ * Whether an identity names someone other than the one the widget has: another user_id, or,
+ * where neither has one, another email. Adding details to the same person is not.
+ */
+export function otherPerson(had: SessionIdentity, next: SessionIdentity): boolean {
+  const id = (v?: string) => v?.trim() || "";
+  const mail = (v?: string) => v?.trim().toLowerCase() || "";
+  if (id(had.user_id) || id(next.user_id)) return !!id(had.user_id) && !!id(next.user_id) && id(had.user_id) !== id(next.user_id);
+  return !!mail(had.email) && !!mail(next.email) && mail(had.email) !== mail(next.email);
 }
 
 function upsert(list: UiMessage[], m: Message): UiMessage[] {

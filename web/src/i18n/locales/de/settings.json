@@ -128,7 +128,10 @@
       "anyoneHint": "Wer in einer Label-Auswahl einen neuen Namen eingibt, erstellt das Label.",
       "adminsHint": "Agenten wählen aus vorhandenen Labels. Nur Admins erstellen neue.",
       "saved": "Label-Einstellung gespeichert"
-    }
+    },
+    "saveFailed": "Das Label konnte nicht gespeichert werden",
+    "deleteFailed": "Das Label konnte nicht gelöscht werden",
+    "reorderFailed": "Die Labels konnten nicht neu sortiert werden"
   },
   "members": {
     "title": "Mitglieder",
@@ -216,7 +219,9 @@
       "off": "Löscht keine Nachrichten",
       "own": "Löscht eigene Notizen",
       "all": "Löscht Notizen und Antworten aller Agenten"
-    }
+    },
+    "invitesSent_one": "Einladung gesendet",
+    "invitesSent_other": "{{count}} Einladungen gesendet"
   },
   "teams": {
     "title": "Teams",
@@ -402,7 +407,10 @@
     "productMailHint": "Die eigenen Mailkonten der Mitglieder, mit ihren Postfächern synchronisiert.",
     "productPages": "Seiten",
     "productPagesHint": "Die eigenen Seiten, Datenbanken und Leinwände deines Teams, getrennt vom Wiki.",
-    "mailUnavailable": {"instance_disabled": "Mail ist für diese Instanz ausgeschaltet.", "plan": "Mail gehört nicht zum Tarif dieses Arbeitsbereichs."},
+    "mailUnavailable": {
+      "instance_disabled": "Mail ist für diese Instanz ausgeschaltet.",
+      "plan": "Mail gehört nicht zum Tarif dieses Arbeitsbereichs."
+    },
     "productKept": "Nichts wird gelöscht",
     "productKeptHint": "Tickets, Mails, Seiten und Verbindungen bleiben erhalten, solange ein Produkt aus ist. Eingehende E-Mails, Anrufe und Chatnachrichten warten und werden fortgesetzt, sobald Tickets wieder an ist.",
     "helpCenter": "Hilfecenter",

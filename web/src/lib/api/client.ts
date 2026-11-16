@@ -3,6 +3,7 @@
 // the browser sends to /v1/auth/refresh (contracts/tokens.md). A 401 triggers
 // one shared refresh of that account, then the request is retried once.
 
+import { i18n } from "@/i18n";
 import type { TokenResponse } from "./types";
 
 export type Problem = {
@@ -79,10 +80,10 @@ export function isApiError(e: unknown, code?: string): e is ApiError {
 }
 
 /** A human message for any thrown value, for toasts and inline errors. */
-export function errorMessage(e: unknown, fallback = "Something went wrong"): string {
+export function errorMessage(e: unknown, fallback: string = i18n.t("common:errors.generic")): string {
   if (e instanceof ApiError) {
-    if (e.code === "network_error") return "Can't reach the server. Check your connection.";
-    if (e.code === "rate_limited") return "Too many attempts. Wait a moment and try again.";
+    if (e.code === "network_error") return i18n.t("common:errors.network");
+    if (e.code === "rate_limited") return i18n.t("common:errors.rateLimited");
     const field = e.errors?.find((x) => x.message)?.message;
     return e.detail || field || e.title || fallback;
   }
@@ -216,6 +217,16 @@ export function inWorkspace<T>(wid: string | null | undefined, fn: () => T): T {
 /** The workspace a request or query key made right now belongs to. */
 export function scopeWorkspace(): string | null {
   return ambient ?? state.workspaceId;
+}
+
+/**
+ * The workspace in scope now, kept for later: `here(() => api.x())` sends a request (or
+ * builds a key) in that workspace whenever it runs. An async function takes it before its
+ * first await and runs every step after one through it, because the scope `inWorkspace`
+ * sets lasts only until the first await (a step after it would otherwise go to the focus).
+ */
+export function bindWorkspace(wid: string | null = scopeWorkspace()): <T>(fn: () => T) => T {
+  return (fn) => inWorkspace(wid, fn);
 }
 
 export function apiUrl(path: string) {

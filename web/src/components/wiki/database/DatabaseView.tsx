@@ -167,7 +167,7 @@ export function DatabaseView({ databaseId, viewId, onViewChange, inline }: { dat
   };
 
   return (
-    <div className={cn("wiki-db @container/db min-w-0", inline && "my-2")}>
+    <div data-ph-mask className={cn("wiki-db @container/db min-w-0", inline && "my-2")}>
       {!inline && (
         <DatabaseKeys
           onNewRow={canEdit && !isForm ? async () => {

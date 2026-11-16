@@ -7,7 +7,13 @@
     "apply": "Toepassen",
     "copy": "Kopiëren",
     "back": "Terug",
-    "continue": "Doorgaan"
+    "continue": "Doorgaan",
+    "undo": "Ongedaan maken"
   },
-  "aboutCost": "ongeveer {{cost}}"
+  "aboutCost": "ongeveer {{cost}}",
+  "errors": {
+    "generic": "Er ging iets mis",
+    "network": "Kan de server niet bereiken. Controleer je verbinding.",
+    "rateLimited": "Te veel pogingen. Wacht even en probeer het opnieuw."
+  }
 }

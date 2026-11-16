@@ -7,7 +7,13 @@
     "apply": "Apply",
     "copy": "Copy",
     "back": "Back",
-    "continue": "Continue"
+    "continue": "Continue",
+    "undo": "Undo"
   },
-  "aboutCost": "about {{cost}}"
+  "aboutCost": "about {{cost}}",
+  "errors": {
+    "generic": "Something went wrong",
+    "network": "Can't reach the server. Check your connection.",
+    "rateLimited": "Too many attempts. Wait a moment and try again."
+  }
 }

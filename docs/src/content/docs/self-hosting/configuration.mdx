@@ -257,7 +257,10 @@ the backend event schemas: only known event names and approved scalar properties
 unknown events, nested values, and unapproved properties are discarded. User and workspace
 UUIDs identify events. Message text, email addresses, credentials, and exception messages are
 not included. Browser analytics has separate `WEB_POSTHOG_KEY` and `WEB_POSTHOG_HOST` settings
-and is not limited by these schemas.
+and is not limited by these schemas. In the browser, autocapture records which element was
+clicked without its text or attributes, and session replay masks every input and all text
+except the app's own fixed labels; pictures, video and framed content (mail, embeds) are left
+out of replays.
 The receiving PostHog project controls access, data residency, and retention, so configure
 those settings for your deployment; the instance does not set PostHog retention.
 

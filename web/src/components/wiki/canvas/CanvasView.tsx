@@ -7,6 +7,7 @@
 // are memoized and drags draw once per frame, so hundreds of cards stay smooth.
 
 import { useQuery } from "@tanstack/react-query";
+import { AlertTriangle } from "lucide-react";
 import { useReducedMotion } from "motion/react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
@@ -104,7 +105,7 @@ export default function CanvasView({ page, canEdit }: { page: WikiPage; canEdit:
   const reduceMotion = useReducedMotion();
   const [history, dispatch] = useReducer(historyReducer, page.canvas, (c) => initHistory(fromApi(c)));
   const doc = history.present;
-  const { setBusy } = useCanvasSync(page, canEdit, doc, dispatch);
+  const { setBusy, conflict, keepMine, loadTheirs } = useCanvasSync(page, canEdit, doc, dispatch);
   const docRef = useRef(doc);
   docRef.current = doc;
 
@@ -925,6 +926,29 @@ export default function CanvasView({ page, canEdit }: { page: WikiPage; canEdit:
               }
               tips={canEdit ? [{ label: t("canvas.empty.tipAdd") }, { label: t("canvas.empty.tipPan") }, { label: t("canvas.empty.tipZoom") }] : undefined}
             />
+          </div>
+        )}
+
+        {conflict && (
+          <div
+            role="alert"
+            onPointerDown={(e) => e.stopPropagation()}
+            onDoubleClick={(e) => e.stopPropagation()}
+            className="absolute inset-x-3 top-3 z-40 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-[color-mix(in_srgb,var(--tone-amber-solid)_35%,var(--line))] bg-tone-amber-soft px-3 py-2 text-[12.5px] text-fg shadow-sm animate-rise-in motion-reduce:animate-none"
+          >
+            <AlertTriangle className="size-4 shrink-0 text-tone-amber" />
+            <span className="min-w-0 flex-1">
+              <span className="font-medium">{conflict.by ? t("canvas.conflict.titleBy", { name: conflict.by.name }) : t("canvas.conflict.title")}</span>{" "}
+              <span className="text-fg-2">{t("canvas.conflict.body", { count: conflict.count })}</span>
+            </span>
+            <span className="flex shrink-0 gap-1.5">
+              <Button size="sm" onClick={loadTheirs}>
+                {t("conflict.loadTheirs")}
+              </Button>
+              <Button size="sm" variant="primary" onClick={keepMine}>
+                {t("conflict.keepMine")}
+              </Button>
+            </span>
           </div>
         )}
 

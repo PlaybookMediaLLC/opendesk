@@ -130,7 +130,10 @@
       "anyoneHint": "Saisir un nouveau nom dans un sélecteur d’étiquettes crée l’étiquette.",
       "adminsHint": "Les agents choisissent parmi les étiquettes existantes. Seuls les administrateurs peuvent en créer.",
       "saved": "Paramètre des étiquettes enregistré"
-    }
+    },
+    "saveFailed": "Impossible d’enregistrer le libellé",
+    "deleteFailed": "Impossible de supprimer le libellé",
+    "reorderFailed": "Impossible de réordonner les libellés"
   },
   "members": {
     "title": "Membres",
@@ -212,7 +215,10 @@
     "discardTitle": "Abandonner les modifications ?",
     "discardBody": "Vos modifications de ce profil ne sont pas enregistrées.",
     "discardConfirm": "Abandonner",
-    "save": "Enregistrer le profil"
+    "save": "Enregistrer le profil",
+    "invitesSent_one": "Invitation envoyée",
+    "invitesSent_many": "{{count}} invitations envoyées",
+    "invitesSent_other": "{{count}} invitations envoyées"
   },
   "teams": {
     "title": "Équipes",
@@ -394,7 +400,10 @@
     "productMailHint": "Les comptes mail personnels des membres, synchronisés avec leurs boîtes.",
     "productPages": "Pages",
     "productPagesHint": "Les pages, bases de données et canevas de votre équipe, à part du wiki.",
-    "mailUnavailable": {"instance_disabled": "Mail est désactivé pour cette instance.", "plan": "Mail ne fait pas partie de l’offre de cet espace de travail."},
+    "mailUnavailable": {
+      "instance_disabled": "Mail est désactivé pour cette instance.",
+      "plan": "Mail ne fait pas partie de l’offre de cet espace de travail."
+    },
     "productKept": "Rien n’est supprimé",
     "productKeptHint": "Les tickets, les mails, les pages et les connexions sont conservés tant qu’un produit est désactivé. Les e-mails, appels et messages de chat reçus attendent et reprennent quand Tickets est réactivé.",
     "helpCenter": "Centre d’aide",

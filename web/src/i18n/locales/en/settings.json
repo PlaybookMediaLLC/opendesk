@@ -128,7 +128,10 @@
       "anyoneHint": "Typing a new name in a label picker creates the label.",
       "adminsHint": "Agents pick from existing labels. Only admins create new ones.",
       "saved": "Label setting saved"
-    }
+    },
+    "saveFailed": "Couldn't save the label",
+    "deleteFailed": "Couldn't delete the label",
+    "reorderFailed": "Couldn't reorder the labels"
   },
   "members": {
     "title": "Members",
@@ -216,7 +219,9 @@
       "off": "Deletes no messages",
       "own": "Deletes their own notes",
       "all": "Deletes any agent’s notes and replies"
-    }
+    },
+    "invitesSent_one": "Invitation sent",
+    "invitesSent_other": "{{count}} invitations sent"
   },
   "teams": {
     "title": "Teams",
@@ -402,7 +407,10 @@
     "productMailHint": "Members’ own mail accounts, synced with their inboxes.",
     "productPages": "Pages",
     "productPagesHint": "Your team's own pages, databases and canvases, apart from the wiki.",
-    "mailUnavailable": {"instance_disabled": "Mail is turned off for this instance.", "plan": "Mail is not part of this workspace’s plan."},
+    "mailUnavailable": {
+      "instance_disabled": "Mail is turned off for this instance.",
+      "plan": "Mail is not part of this workspace’s plan."
+    },
     "productKept": "Nothing is deleted",
     "productKeptHint": "Tickets, mail, pages and connections are kept while a product is off. Incoming email, calls and chat messages wait and resume when Tickets is back on.",
     "helpCenter": "Help center",

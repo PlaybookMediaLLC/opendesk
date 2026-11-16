@@ -7,7 +7,13 @@
     "apply": "应用",
     "copy": "复制",
     "back": "返回",
-    "continue": "继续"
+    "continue": "继续",
+    "undo": "撤销"
   },
-  "aboutCost": "约 {{cost}}"
+  "aboutCost": "约 {{cost}}",
+  "errors": {
+    "generic": "出了点问题",
+    "network": "无法连接到服务器。请检查网络连接。",
+    "rateLimited": "尝试次数过多。请稍候再试。"
+  }
 }
