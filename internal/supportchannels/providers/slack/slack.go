@@ -133,6 +133,9 @@ func (a Adapter) Validate(ctx context.Context, c *http.Client, cr map[string]str
 }
 
 func (Adapter) Verify(h http.Header, body []byte, cr map[string]string) error {
+	if cr["signing_secret"] == "" {
+		return errors.New("invalid slack signature") // a connection without a secret verifies nothing
+	}
 	ts := h.Get("X-Slack-Request-Timestamp")
 	at, err := time.ParseDuration(ts + "s")
 	if err != nil || time.Since(time.Unix(0, 0).Add(at)).Abs() > 5*time.Minute {

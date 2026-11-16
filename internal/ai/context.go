@@ -164,6 +164,11 @@ func OutsideText(msgs []domain.Message) bool {
 	return false
 }
 
+// RenderThread renders a ticket's messages for a model: each message its own data block
+// with who wrote it (customer, agent, internal note, ...) set by the application, so text
+// inside a message cannot pass for another speaker. budget bounds the characters.
+func RenderThread(msgs []domain.Message, budget int) string { return renderThread(msgs, "", budget) }
+
 // lastCustomerText is the latest customer message, for retrieval queries.
 func lastCustomerText(msgs []domain.Message) string {
 	for i := len(msgs) - 1; i >= 0; i-- {

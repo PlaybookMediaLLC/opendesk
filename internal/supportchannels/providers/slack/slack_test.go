@@ -52,6 +52,9 @@ func TestVerifyAndParseThreadCommand(t *testing.T) {
 		t.Fatalf("event: %+v", events)
 	}
 	h.Set("X-Slack-Signature", "v0=bad")
+	if err := (Adapter{}).Verify(h, body, map[string]string{"signing_secret": ""}); err == nil {
+		t.Fatal("accepted an empty signing secret")
+	}
 	if err := (Adapter{}).Verify(h, body, map[string]string{"signing_secret": secret}); err == nil {
 		t.Fatal("accepted invalid signature")
 	}
