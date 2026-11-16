@@ -124,7 +124,7 @@ func (b *Box) SealFor(aad, plaintext []byte) ([]byte, error) {
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, err
 	}
-	out := append(append(make([]byte, 0, len(boundPrefix)+len(nonce)+len(plaintext)+b.aead.Overhead()), boundPrefix...), nonce...)
+	out := append(append([]byte{}, boundPrefix...), nonce...)
 	return b.aead.Seal(out, nonce, plaintext, boundAAD(aad)), nil
 }
 
