@@ -492,6 +492,8 @@ type Usage struct {
 	// OwnKey marks a call made on the workspace's own provider key: it is recorded
 	// (source own_key) and charges nothing.
 	OwnKey bool
+	// Hold is the call's hold on the balance (Hold), released when the call is charged.
+	Hold uuid.UUID
 }
 
 // Charge is what u costs the workspace at the service's markup.
@@ -518,17 +520,78 @@ func (s *Service) markup() float64 {
 	return s.Markup
 }
 
-// Reserve checks that a call can start before the model is called: the balance must
-// cover the call's estimate, and never less than MinBalance. It does not spend.
+// Reserve checks that a call can start before the model is called: the balance, less what
+// calls in progress hold, must cover the call's estimate, and never less than MinBalance.
+// It neither spends nor holds; Hold does both checks and holds.
 func (s *Service) Reserve(ctx context.Context, q db.Querier, wid uuid.UUID, estimate Micro) error {
 	c, err := s.Balance(ctx, q, wid)
 	if err != nil {
 		return err
 	}
-	if !c.Unlimited && c.Remaining < max(estimate, MinBalance) {
+	if c.Unlimited {
+		return nil
+	}
+	var held Micro
+	if err := q.QueryRow(ctx, `SELECT coalesce(sum(micro_usd), 0)::bigint FROM ai_balance_holds WHERE workspace_id = $1 AND expires_at > now()`,
+		wid).Scan(&held); err != nil {
+		return err
+	}
+	if c.Remaining-held < max(estimate, MinBalance) {
 		return ErrNoBalance
 	}
 	return nil
+}
+
+// HoldFor is how long a hold lasts when its call is never charged or released.
+const HoldFor = 10 * time.Minute
+
+// Hold reserves estimate of the workspace's balance for a call about to start: under the
+// balance row's lock, the balance less every live hold must cover the estimate (and never
+// less than MinBalance), else ErrNoBalance. The hold ends when the call is charged
+// (Usage.Hold), released (Release), or after HoldFor. A workspace with unlimited AI holds
+// nothing (uuid.Nil).
+func (s *Service) Hold(ctx context.Context, pool db.Querier, wid uuid.UUID, estimate Micro) (uuid.UUID, error) {
+	e, err := s.Entitlements(ctx, pool, wid)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	if e.UnlimitedAI {
+		return uuid.Nil, nil
+	}
+	var id uuid.UUID
+	err = pgx.BeginFunc(ctx, txStarter{pool}, func(tx pgx.Tx) error {
+		if err := Ensure(ctx, tx, wid); err != nil {
+			return err
+		}
+		ps := periodStart(time.Now())
+		var used, purchased Micro
+		if err := tx.QueryRow(ctx, `SELECT CASE WHEN period_start < $2 THEN 0 ELSE included_used_micro_usd END, purchased_micro_usd
+			FROM ai_balances WHERE workspace_id = $1 FOR UPDATE`, wid, ps).Scan(&used, &purchased); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM ai_balance_holds WHERE workspace_id = $1 AND expires_at <= now()`, wid); err != nil {
+			return err
+		}
+		var held Micro
+		if err := tx.QueryRow(ctx, `SELECT coalesce(sum(micro_usd), 0)::bigint FROM ai_balance_holds WHERE workspace_id = $1`, wid).Scan(&held); err != nil {
+			return err
+		}
+		if max(e.MonthlyUSD-used, 0)+max(purchased, 0)-held < max(estimate, MinBalance) {
+			return ErrNoBalance
+		}
+		return tx.QueryRow(ctx, `INSERT INTO ai_balance_holds (workspace_id, micro_usd, expires_at) VALUES ($1, $2, now() + $3::int * interval '1 second')
+			RETURNING id`, wid, max(estimate, 0), int(HoldFor/time.Second)).Scan(&id)
+	})
+	return id, err
+}
+
+// Release ends a hold whose call was not charged (it failed before the model answered).
+func (s *Service) Release(ctx context.Context, pool db.Querier, id uuid.UUID) error {
+	if id == uuid.Nil {
+		return nil
+	}
+	_, err := pool.Exec(ctx, `DELETE FROM ai_balance_holds WHERE id = $1`, id)
+	return err
 }
 
 // Spend charges a completed AI call on its real cost: the monthly allowance first, then
@@ -540,6 +603,12 @@ func (s *Service) Spend(ctx context.Context, pool db.Querier, wid uuid.UUID, u U
 	cost, err := s.Charge(u)
 	if err != nil {
 		return 0, err
+	}
+	if u.Hold != uuid.Nil {
+		// The call is charged now: its hold ends, whatever the charge below does.
+		if err := s.Release(ctx, pool, u.Hold); err != nil {
+			return 0, err
+		}
 	}
 	if u.OwnKey {
 		_, err := pool.Exec(ctx, `INSERT INTO ai_usage (workspace_id, user_id, feature, micro_usd, model, input_tokens, output_tokens, ticket_id, cost_usd, source)
