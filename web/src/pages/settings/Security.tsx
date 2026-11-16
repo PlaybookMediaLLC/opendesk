@@ -20,7 +20,7 @@ import { QrCode } from "@/components/settings/QrCode";
 import { ReauthNotice, isReauthError } from "@/components/settings/ReauthNotice";
 import { describeUserAgent } from "@/components/settings/userAgent";
 import { api } from "@/lib/api/endpoints";
-import { errorMessage, isApiError } from "@/lib/api/client";
+import { bindWorkspace, errorMessage, isApiError } from "@/lib/api/client";
 import type { Session } from "@/lib/api/types";
 import { relLong } from "@/lib/format";
 import { q, qk } from "@/lib/queries";
@@ -383,7 +383,8 @@ function SessionsSection() {
 
   const revoke = useMutation({
     mutationFn: async (ids: string[]) => {
-      for (const id of ids) await api.me.revokeSession(id);
+      const here = bindWorkspace();
+      for (const id of ids) await here(() => api.me.revokeSession(id));
     },
     onMutate: async (ids) => {
       await qc.cancelQueries({ queryKey: qk.sessions });

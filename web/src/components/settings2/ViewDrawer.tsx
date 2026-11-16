@@ -25,7 +25,7 @@ import { cleanFilters, clearField, fieldOps, filterOp, hasFilter, joinList, spli
 import { CompaniesPick, ContactsPick, MultiPick, SinglePick, ValueButton, channelItems, priorityItems, severityFilterItems, statusItems, useMailboxItems, useMemberItems, useTagItems, useTeamItems } from "@/components/settings2/pickers";
 import { useDisplay } from "@/components/tickets/fields";
 import { api } from "@/lib/api/endpoints";
-import { errorMessage } from "@/lib/api/client";
+import { bindWorkspace, errorMessage } from "@/lib/api/client";
 import type { Channel, Priority, Severity, TicketFilters, TicketStatus, View, ViewIcon as ViewIconValue } from "@/lib/api/types";
 import { q, qk, upsertInList } from "@/lib/queries";
 import { atLeast, useRole, useUser } from "@/lib/session";
@@ -108,6 +108,7 @@ export function ViewDrawer({ view, copyOf, views, nextPosition, onClose }: { vie
 
   const save = useMutation({
     mutationFn: async () => {
+      const here = bindWorkspace();
       const filters = cleanFilters(f);
       if (view) return api.views.update(view.id, { name: name.trim(), shared: teamId ? false : shared, team_id: teamId, filters, section: section || null, icon });
       const position = copyOf ? copyOf.position + 1 : nextPosition;
@@ -125,9 +126,9 @@ export function ViewDrawer({ view, copyOf, views, nextPosition, onClose }: { vie
       if (copyOf) {
         // The views after the original move down one, so the copy sits right after it.
         const moves = makeRoom(views, copyOf.id, position, (v) => canWriteView(rights, v));
-        const done = await Promise.allSettled(moves.map((m) => api.views.update(m.id, { position: m.position })));
+        const done = await Promise.allSettled(here(() => moves.map((m) => api.views.update(m.id, { position: m.position }))));
         if (done.some((r) => r.status === "rejected")) toast.error(t("views.reorderFailed"));
-        void qc.invalidateQueries({ queryKey: qk.views });
+        void qc.invalidateQueries({ queryKey: here(() => qk.views) });
       }
       return created;
     },

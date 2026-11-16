@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Archive, Check, Globe, Inbox, Mail, Plus, ShieldAlert, Trash2, Users, X } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
+import { bindWorkspace } from "@/lib/api/client";
 import { api } from "@/lib/api/endpoints";
 import type { MailAudience, MailCategory, MailFolder, MailThreadAction, Member } from "@/lib/api/types";
 import { buildFolderTree, flattenTree } from "@/lib/collab/boxes";
@@ -235,10 +236,10 @@ function Chip({ children, onRemove, label }: { children: ReactNode; onRemove?: (
 }
 
 /** The workspace's pending, unexpired invitation of an address, if any (admins only). */
-async function pendingInvitation(email: string) {
+async function pendingInvitation(email: string, here: <T>(fn: () => T) => T) {
   let cursor: string | null = null;
   do {
-    const page = await api.invitations.list({ limit: 100, cursor });
+    const page = await here(() => api.invitations.list({ limit: 100, cursor }));
     const hit = page.data.find((i) => i.email.toLowerCase() === email && Date.parse(i.expires_at) > Date.now());
     if (hit) return hit;
     cursor = page.next_cursor;
@@ -287,8 +288,9 @@ export function AudienceLists({
   // new role and link. An expired one is invited again.
   const invite = useMutation({
     mutationFn: async (email: string) => {
-      const pending = await pendingInvitation(email);
-      return pending ? { inv: pending, sent: false } : { inv: await api.invitations.create({ email, role: "agent" }), sent: true };
+      const here = bindWorkspace();
+      const pending = await pendingInvitation(email, here);
+      return pending ? { inv: pending, sent: false } : { inv: await here(() => api.invitations.create({ email, role: "agent" })), sent: true };
     },
     onSuccess: ({ inv, sent }) => {
       void qc.invalidateQueries({ queryKey: qk.invitations });

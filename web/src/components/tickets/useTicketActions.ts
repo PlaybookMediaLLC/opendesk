@@ -11,7 +11,7 @@ import { cachedTicket, forgetTicket, patchTicketEverywhere, removeTicketEverywhe
 import { markHidden } from "@/lib/realtime/store";
 import { useSession } from "@/lib/session";
 import { toast } from "@/components/ui/toast";
-import { isApiError } from "@/lib/api/client";
+import { bindWorkspace, isApiError } from "@/lib/api/client";
 import { focusField, isUnknownLabel, requiredFieldKeys } from "./fields";
 import { replyAddressAfterMove } from "./teams";
 
@@ -112,10 +112,13 @@ export function useUpdateTicket() {
   return useMutation({
     mutationFn: ({ id, patch }: { id: string; patch: TicketPatch; quiet?: boolean }) => api.tickets.update(id, patch),
     onMutate: async ({ id, patch }) => {
+      const here = bindWorkspace();
       await qc.cancelQueries({ queryKey: qk.ticket(id) });
-      const prev = cachedTicket(qc, id);
-      if (prev) patchTicketEverywhere(qc, applyPatch(qc, prev, patch), me);
-      return { prev };
+      return here(() => {
+        const prev = cachedTicket(qc, id);
+        if (prev) patchTicketEverywhere(qc, applyPatch(qc, prev, patch), me);
+        return { prev };
+      });
     },
     onError: (e, _v, ctx) => {
       if (ctx?.prev) patchTicketEverywhere(qc, ctx.prev, me);

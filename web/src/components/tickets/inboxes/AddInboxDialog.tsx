@@ -17,7 +17,7 @@ import { Field, Textarea, TextInput } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "@/components/ui/toast";
 import { useAI } from "@/lib/ai";
-import { errorMessage } from "@/lib/api/client";
+import { bindWorkspace, errorMessage } from "@/lib/api/client";
 import { api } from "@/lib/api/endpoints";
 import type { MailAccount, Mailbox } from "@/lib/api/types";
 import { useSaveSidebarPrefs, useSidebarPrefs } from "@/lib/collab/hooks";
@@ -88,9 +88,9 @@ function FromAccount({ account, onCancel, onDone }: { account: MailAccount; onCa
   const [keep, setKeep] = useState(false);
   const hand = useMutation({
     mutationFn: async () => {
+      const here = bindWorkspace();
       const r = await api.collab.accounts.useForTickets(account.id, { name: name.trim() || undefined, team_id: team, brand_id: brand, keep_account: keep });
-      const m = await api.mailboxes.get(r.mailbox_id);
-      return m;
+      return here(() => api.mailboxes.get(r.mailbox_id));
     },
     onSuccess: (m) => {
       void qc.invalidateQueries({ queryKey: qk.mailboxes });

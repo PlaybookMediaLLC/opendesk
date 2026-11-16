@@ -218,6 +218,16 @@ export function scopeWorkspace(): string | null {
   return ambient ?? state.workspaceId;
 }
 
+/**
+ * The workspace in scope now, kept for later: `here(() => api.x())` sends a request (or
+ * builds a key) in that workspace whenever it runs. An async function takes it before its
+ * first await and runs every step after one through it, because the scope `inWorkspace`
+ * sets lasts only until the first await (a step after it would otherwise go to the focus).
+ */
+export function bindWorkspace(wid: string | null = scopeWorkspace()): <T>(fn: () => T) => T {
+  return (fn) => inWorkspace(wid, fn);
+}
+
 export function apiUrl(path: string) {
   return `${state.baseUrl}${path}`;
 }
