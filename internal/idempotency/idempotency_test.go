@@ -98,6 +98,14 @@ func newEnv(t *testing.T) *env {
 		_, _ = io.WriteString(w, "event: done\ndata: {}\n\n")
 		_ = http.NewResponseController(w).Flush()
 	})
+	r.Post("/v1/keys", func(w http.ResponseWriter, r *http.Request) {
+		n := e.calls.Add(1)
+		httpx.MarkSecretResponse(r.Context())
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Location", fmt.Sprintf("/v1/keys/%d", n))
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"secret":"od_live_shown-once-marker"}`)
+	})
 	r.Post("/v1/auth/login", func(w http.ResponseWriter, r *http.Request) { e.calls.Add(1); w.WriteHeader(http.StatusOK) })
 	e.srv = httptest.NewServer(r)
 	t.Cleanup(func() {
@@ -406,5 +414,36 @@ func TestExpiredAndAbandonedKeys(t *testing.T) {
 	}
 	if r := e.post(c, "/v1/things", stale, `{}`); r.status != 201 || r.header.Get(ReplayedHeader) != "" {
 		t.Fatalf("abandoned key: %d %s", r.status, r.body)
+	}
+}
+
+// A response with a secret shown once is answered once: no copy is kept, and a retry with
+// the same key is refused with the resource's Location instead of the secret.
+func TestSecretResponseNotStored(t *testing.T) {
+	e := newEnv(t)
+	ws := e.workspace()
+	c := e.user(ws)
+	key := uuid.NewString()
+	before := e.calls.Load()
+	first := e.post(c, "/v1/keys", key, `{}`)
+	if first.status != 201 || !bytes.Contains(first.body, []byte("shown-once-marker")) {
+		t.Fatalf("first: %d %s", first.status, first.body)
+	}
+	var enc []byte
+	var secret bool
+	if err := e.db.Pool.QueryRow(context.Background(), `SELECT body_enc, secret FROM idempotency_keys WHERE user_id = $1 AND key = $2`,
+		c.userID, key).Scan(&enc, &secret); err != nil {
+		t.Fatal(err)
+	}
+	if len(enc) != 0 || !secret {
+		t.Fatalf("stored %d body bytes, secret %v", len(enc), secret)
+	}
+	again := e.post(c, "/v1/keys", key, `{}`)
+	if again.status != 409 || again.code() != "idempotency_secret_withheld" || bytes.Contains(again.body, []byte("shown-once-marker")) ||
+		again.header.Get("Location") != first.header.Get("Location") {
+		t.Fatalf("retry: %d %s %q", again.status, again.body, again.header.Get("Location"))
+	}
+	if got := e.calls.Load() - before; got != 1 {
+		t.Fatalf("handler ran %d times, want 1", got)
 	}
 }

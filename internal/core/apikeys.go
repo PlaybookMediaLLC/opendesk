@@ -269,6 +269,7 @@ func (s *svc) registerAPIKeys(api huma.API) {
 			if err != nil {
 				return nil, httpx.Wrap(err)
 			}
+			httpx.MarkSecretResponse(ctx)
 			s.d.Analytics.Capture(p.UserID.String(), p.WorkspaceID.String(), "api_key_created",
 				map[string]any{"scope_count": len(scopes), "expires": in.Body.ExpiresAt != nil, "bot": k.BotID != nil})
 			return &struct {

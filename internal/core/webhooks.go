@@ -366,6 +366,7 @@ func (s *svc) registerWebhooks(api huma.API) {
 			if p.Kind == auth.KindUser {
 				distinct = p.UserID.String()
 			}
+			httpx.MarkSecretResponse(ctx)
 			s.d.Analytics.Capture(distinct, p.WorkspaceID.String(), "webhook_created", map[string]any{"all_events": evs[0] == "*", "event_count": len(evs)})
 			return &struct {
 				CacheControl string `header:"Cache-Control"`

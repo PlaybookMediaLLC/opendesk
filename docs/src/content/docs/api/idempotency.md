@@ -34,5 +34,6 @@ If you retry with the same key within **24 hours**, opendesk returns the result 
 | Same key with a different body or route | `422 idempotency_key_reused`. Use a new key. |
 | Same key while the first request is still running | `409 idempotency_in_progress`. Retry shortly. |
 | First request failed with a `5xx` or `429` | Nothing is stored, so a retry with the same key runs again. |
+| Retry of a request whose response held a secret shown once (a new API key, a signing secret) | `409 idempotency_secret_withheld`, with `Location` when the response had one. The secret is never stored, so it cannot be shown again: if it was lost, remove what was created and create it again with a new key. |
 
 Responses larger than 1 MiB are not stored, so a retry of such a request runs again.

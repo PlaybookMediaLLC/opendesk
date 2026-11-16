@@ -899,6 +899,7 @@ func (s *svc) rotateWidgetSecret(ctx context.Context, id *uuid.UUID) (*widgetSec
 	if err != nil {
 		return nil, httpx.Wrap(err)
 	}
+	httpx.MarkSecretResponse(ctx)
 	out := &widgetSecretOut{CacheControl: "no-store"}
 	out.Body.Secret = secret
 	return out, nil

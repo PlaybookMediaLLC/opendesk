@@ -39,7 +39,10 @@ it exists, and this file is the contract the parts are built against.
 - Idempotency: `Idempotency-Key` header (1..255 printable ASCII) on authenticated POST routes, kept 24h per
   workspace and principal. A retry with the same key, route and body replays the stored response with
   `Idempotent-Replayed: true`; a different body or route is `422 idempotency_key_reused`, a retry while the first
-  is running `409 idempotency_in_progress`. `5xx`, `429`, streamed and >1 MiB responses are not stored. Not
+  is running `409 idempotency_in_progress`. `5xx`, `429`, streamed and >1 MiB responses are not stored. A response
+  that carries a secret shown once (a new API key, a webhook's or an http panel's signing secret, a widget's identity
+  secret) is never stored either: the key keeps only that the request succeeded, and a retry answers
+  `409 idempotency_secret_withheld` (with the resource's `Location` when it had one) instead of the secret. Not
   applied to `/v1/auth/*`, `/v1/me/password`, `/v1/me/passkeys/register/*`, `/v1/realtime/token`, inbound, Stripe, widget and public routes.
 - Rate limits: `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` headers. Per credential, 1200 requests a
   minute and 600 writes. An API key's count is the instance's (Postgres, `auth_throttle`), whichever API process

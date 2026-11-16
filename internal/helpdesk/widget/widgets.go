@@ -446,6 +446,7 @@ func (h *handler) registerWidgets(api huma.API) {
 				return nil, httpx.Wrap(err)
 			}
 			if ok {
+				httpx.MarkSecretResponse(ctx)
 				out.Body.Secret, out.Body.SecretAvailable = secret, true
 			}
 			return out, nil
