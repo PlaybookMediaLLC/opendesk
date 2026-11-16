@@ -37,6 +37,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { useTranslation } from "react-i18next";
 import type { AIDraftRef, MailFolder, MailThread, MailThreadAction } from "@/lib/api/types";
 import { api } from "@/lib/api/endpoints";
+import { rowUsable } from "@/lib/collab/access";
 import { inverseAction, leavesList, listPlace, UNDOABLE } from "@/lib/collab/actions";
 import { accountName, boxForRole, isMailBox, mailListQuery, type MailSearch } from "@/lib/collab/boxes";
 import { cachedFolders } from "@/lib/collab/cache";
@@ -144,6 +145,8 @@ export default function MailPage() {
   const spans = !account && !folder && (accounts?.length ?? 0) > 1;
   const ownEmails = useMemo(() => new Set((accounts ?? []).flatMap((a) => ownEmailsOf(a))), [accounts]);
   const accountsById = useMemo(() => new Map((accounts ?? []).map((a) => [a.id, a])), [accounts]);
+  // A private account's conversation shared with you is yours to read and comment on alone.
+  const accountIds = useMemo(() => new Set(accountsById.keys()), [accountsById]);
 
   // An inbox (no folder, no search) whose accounts are split shows its tabs; Primary when none is chosen.
   const tabbed = box === "inbox" && !search.folder && !search.q;
@@ -1073,7 +1076,7 @@ export default function MailPage() {
                       onOpen={open}
                       onToggle={toggle}
                       onHover={prefetch}
-                      onAction={canAct ? onRowAction : undefined}
+                      onAction={canAct && rowUsable(x, accountIds) ? onRowAction : undefined}
                       handling={handlingOn(x)}
                       onDragOut={canAct ? onDragOut : undefined}
                       onDraft={draftsInRows ? onRowDraft : undefined}

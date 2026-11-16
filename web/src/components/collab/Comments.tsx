@@ -9,6 +9,7 @@ import { forwardRef, useImperativeHandle, useMemo, useRef, useState, type ReactN
 import { useTranslation } from "react-i18next";
 import { api } from "@/lib/api/endpoints";
 import type { MailComment, MailThreadDetail, Member } from "@/lib/api/types";
+import { mentionableIds } from "@/lib/collab/access";
 import { isBlankHtml, mentionIds } from "@/lib/collab/html";
 import { fullDate, relShort } from "@/lib/format";
 import { cn } from "@/lib/cn";
@@ -25,10 +26,12 @@ import { Menu, MenuContent, MenuItem, MenuTrigger } from "@/components/ui/menu";
 import { toast } from "@/components/ui/toast";
 import { Tooltip } from "@/components/ui/tooltip";
 
-function useMentionExtension() {
+/** The mention list: every member, or only those in allowed (the people who see a conversation
+ * whose mailbox is someone else's, since mentioning shares it). */
+function useMentionExtension(allowed: Set<string> | null = null) {
   const { data: members } = useQuery(q.members());
   const ref = useRef<Member[]>([]);
-  ref.current = members ?? [];
+  ref.current = (members ?? []).filter((m) => !allowed || allowed.has(m.user.id));
   // One extension per editor; it reads the members as they are when @ is typed.
   return useMemo(() => [mentionExtension(() => ref.current)], []);
 }
@@ -41,7 +44,7 @@ function patchComments(qc: ReturnType<typeof useQueryClient>, threadId: string, 
   });
 }
 
-function CommentItem({ c, threadId, canAct, fresh }: { c: MailComment; threadId: string; canAct: boolean; fresh: boolean }) {
+function CommentItem({ c, threadId, canAct, fresh, mentionable }: { c: MailComment; threadId: string; canAct: boolean; fresh: boolean; mentionable: Set<string> | null }) {
   const { t } = useTranslation("collab");
   const qc = useQueryClient();
   const confirm = useConfirm();
@@ -50,7 +53,7 @@ function CommentItem({ c, threadId, canAct, fresh }: { c: MailComment; threadId:
   const mine = !!c.author && c.author.id === me;
   const [editing, setEditing] = useState(false);
   const [html, setHtml] = useState(c.body_html);
-  const extensions = useMentionExtension();
+  const extensions = useMentionExtension(mentionable);
   const editor = useRef<RichEditorHandle>(null);
   const body = useMemo(() => sanitizeHtml(c.body_html), [c.body_html]);
   const name = c.author?.name ?? t("comments.someone");
@@ -150,6 +153,7 @@ export function Comments({ detail }: { detail: MailThreadDetail }) {
   // The comments there when it opened; any other arrived since, and enters.
   const seen = useRef<Set<string> | null>(null);
   seen.current ??= new Set(detail.comments.map((c) => c.id));
+  const mentionable = useMemo(() => mentionableIds(detail), [detail]);
   if (!detail.comments.length) return null;
   return (
     <section aria-label={t("comments.title")} className="rounded-lg border border-dashed border-note-line bg-note px-4 py-3">
@@ -170,7 +174,7 @@ export function Comments({ detail }: { detail: MailThreadDetail }) {
               exit={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.98 }}
               transition={springs.row}
             >
-              <CommentItem c={c} threadId={detail.thread.id} canAct={detail.can_act} fresh={!seen.current?.has(c.id)} />
+              <CommentItem c={c} threadId={detail.thread.id} canAct={detail.can_act} fresh={!seen.current?.has(c.id)} mentionable={mentionable} />
             </motion.li>
           ))}
         </AnimatePresence>
@@ -225,7 +229,7 @@ export const CommentBar = forwardRef<CommentBarHandle, { detail: MailThreadDetai
   };
   const [focused, setFocused] = useState(false);
   const editor = useRef<RichEditorHandle>(null);
-  const extensions = useMentionExtension();
+  const extensions = useMentionExtension(useMemo(() => mentionableIds(detail), [detail]));
   const writing = focused || !isBlankHtml(html);
   const add = useMutation({
     mutationFn: (body_html: string) => api.collab.threads.comment(threadId, { body_html, mentions: mentionIds(body_html) }),

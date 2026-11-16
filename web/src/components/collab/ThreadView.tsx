@@ -70,6 +70,7 @@ import { MailMessageItem } from "./MailMessageItem";
 import { PersonPanel } from "./PersonPanel";
 import { AssignPicker, LabelsPicker, MovePicker, type MoveTarget } from "./pickers";
 import { ShareDialog } from "./ShareDialog";
+import { canUseMailbox } from "@/lib/collab/access";
 import { SnoozeMenu } from "@/components/tickets/detail/SnoozeMenu";
 import { weekdayClock } from "@/lib/format";
 
@@ -282,7 +283,7 @@ export const ThreadView = forwardRef<ThreadViewHandle, ThreadViewProps>(function
   // focusing itself meanwhile would stop a smooth scroll partway.
   const showComposer = () => requestAnimationFrame(() => requestAnimationFrame(() => composerRef.current?.scrollIntoView({ block: "nearest" })));
   const openComposer = (mode: ComposeMode) => {
-    if (!detail?.can_act) return;
+    if (!detail || !canUseMailbox(detail)) return;
     setCommentThread(null);
     setEditing(null);
     setComposerDraftId(null);
@@ -292,7 +293,7 @@ export const ThreadView = forwardRef<ThreadViewHandle, ThreadViewProps>(function
   };
   /** Continues a draft: under its conversation, or new mail in the floating composer. */
   const editDraft = (m: MailMessage) => {
-    if (!detail?.can_act) return;
+    if (!detail || !canUseMailbox(detail)) return;
     setCommentThread(null);
     if (!messages.length) {
       compose.open({ fromDraft: m });
@@ -308,8 +309,8 @@ export const ThreadView = forwardRef<ThreadViewHandle, ThreadViewProps>(function
   useImperativeHandle(ref, () => ({
     reply: openComposer,
     comment: () => detail?.can_act && setCommentThread(threadId),
-    move: () => detail?.can_act && setMoveOpen(true),
-    labels: () => detail?.can_act && hasLabels && setLabelOpen(true),
+    move: () => !!detail && canUseMailbox(detail) && setMoveOpen(true),
+    labels: () => !!detail && canUseMailbox(detail) && hasLabels && setLabelOpen(true),
     people: togglePanel,
   }));
 
@@ -366,7 +367,7 @@ export const ThreadView = forwardRef<ThreadViewHandle, ThreadViewProps>(function
   // Opened from the Drafts box: its newest draft continues in the composer.
   const draftOpened = useRef(false);
   useEffect(() => {
-    if (!detail || !openDraft || draftOpened.current || !detail.can_act) return;
+    if (!detail || !openDraft || draftOpened.current || !canUseMailbox(detail)) return;
     draftOpened.current = true;
     const newest = [...detail.messages].reverse().find((m) => m.draft);
     if (newest) editDraft(newest);
@@ -424,7 +425,10 @@ export const ThreadView = forwardRef<ThreadViewHandle, ThreadViewProps>(function
     );
 
   const th = detail.thread;
+  // Comments need agent or above; acting on the mail, replying, sharing and assigning need
+  // the account's mailbox too (a private account's is its owner's alone).
   const canAct = detail.can_act;
+  const canUse = canUseMailbox(detail);
   const inSpam = th.folder_ids.some((id) => folders?.find((f) => f.id === id)?.role === "spam");
   const inInbox = th.folder_ids.some((id) => folders?.find((f) => f.id === id)?.role === "inbox");
   const pills = folderPills(detail, folders, (b) => t(`box.${b as "inbox"}`, { defaultValue: b }));
@@ -468,7 +472,7 @@ export const ThreadView = forwardRef<ThreadViewHandle, ThreadViewProps>(function
           <ArrowLeft />
         </HeaderButton>
         <span aria-hidden className="mx-1.5 h-4 w-px bg-line" />
-        {canAct && (
+        {canUse && (
           <>
             {inInbox || !inSpam ? (
               <HeaderButton label={t("action.archive")} shortcut="e" onClick={() => onAction("archive")}>
@@ -556,7 +560,7 @@ export const ThreadView = forwardRef<ThreadViewHandle, ThreadViewProps>(function
           <HeaderButton label={t("action.next")} shortcut="j" onClick={onNext} disabled={!onNext}>
             <ChevronDown />
           </HeaderButton>
-          {canAct && (
+          {canUse && (
             <>
               <span aria-hidden className="mx-1.5 h-4 w-px bg-line" />
               <Button size="sm" variant="ghost" icon={<Users />} onClick={() => setShare(true)}>
@@ -586,7 +590,7 @@ export const ThreadView = forwardRef<ThreadViewHandle, ThreadViewProps>(function
               </button>
             </MenuTrigger>
             <MenuContent>
-              {canAct && (
+              {canUse && (
                 <>
                   {replyModes.map((mode) => (
                     <MenuItem key={mode} icon={replyKind[mode].icon} shortcut={replyKind[mode].shortcut} onSelect={() => openComposer(mode)}>
@@ -607,17 +611,19 @@ export const ThreadView = forwardRef<ThreadViewHandle, ThreadViewProps>(function
               >
                 {t("action.copyLink")}
               </MenuItem>
-              <MenuItem
-                icon={<RefreshCw />}
-                onSelect={() => {
-                  void api.collab.accounts.sync(detail.account.id).then(
-                    () => toast.info(t("toast.syncing", { name: detail.account.name || detail.account.email })),
-                    (e) => toast.error(e),
-                  );
-                }}
-              >
-                {t("action.syncAccount")}
-              </MenuItem>
+              {canUse && (
+                <MenuItem
+                  icon={<RefreshCw />}
+                  onSelect={() => {
+                    void api.collab.accounts.sync(detail.account.id).then(
+                      () => toast.info(t("toast.syncing", { name: detail.account.name || detail.account.email })),
+                      (e) => toast.error(e),
+                    );
+                  }}
+                >
+                  {t("action.syncAccount")}
+                </MenuItem>
+              )}
               {account?.can_manage && (
                 <MenuItem icon={<Settings />} onSelect={() => void navigate({ to: "/settings/mail-accounts/$accountId", params: { accountId: detail.account.id } })}>
                   {t("action.openAccount")}
@@ -709,9 +715,9 @@ export const ThreadView = forwardRef<ThreadViewHandle, ThreadViewProps>(function
             return <MailMessageItem key={m.id} m={m} open={isOpen(m.id, i)} onToggle={() => (i === last ? setFoldedLast((f) => (f === m.id ? null : m.id)) : toggle(m.id))} />;
           })}
 
-          {drafts.map((m) => (canAct ? <DraftRow key={m.id} m={m} composing={!!composer || !!editing} onOpen={() => editDraft(m)} /> : <MailMessageItem key={m.id} m={m} open={false} onToggle={() => undefined} />))}
+          {drafts.map((m) => (canUse ? <DraftRow key={m.id} m={m} composing={!!composer || !!editing} onOpen={() => editDraft(m)} /> : <MailMessageItem key={m.id} m={m} open={false} onToggle={() => undefined} />))}
 
-          {canAct && detail.unused_ai_drafts?.map((d) => <UnusedAIDraft key={d.id} draft={d} threadId={th.id} />)}
+          {canUse && detail.unused_ai_drafts?.map((d) => <UnusedAIDraft key={d.id} draft={d} threadId={th.id} />)}
           {discardedAI && <AIDraftFeedbackDialog draft={discardedAI} threadId={th.id} open={feedbackOpen} onOpenChange={setFeedbackOpen} defaultReason="should_not_answer" />}
 
           <AnimatePresence initial={false}>
@@ -730,7 +736,7 @@ export const ThreadView = forwardRef<ThreadViewHandle, ThreadViewProps>(function
             )}
           </AnimatePresence>
 
-          {canAct && (editing || composer) && (
+          {canUse && (editing || composer) && (
             <div ref={composerRef} className="mt-1 scroll-mb-4" hidden={commentMode}>
               {editing ? (
                 <MailComposer
@@ -791,7 +797,16 @@ export const ThreadView = forwardRef<ThreadViewHandle, ThreadViewProps>(function
 
       <footer className={cn("@container relative z-10 shrink-0 border-t border-line bg-surface transition-shadow duration-200 ease-out", below && "shadow-[0_-8px_16px_-12px_rgb(10_10_10/0.18)] dark:shadow-[0_-8px_16px_-12px_rgb(0_0_0/0.6)]")}>
         <div className="mx-auto w-full max-w-[860px] px-4 py-2.5 md:px-6">
-          {canAct ? (
+          {canAct && !canUse ? (
+            // Someone else's private mailbox: read and comment, nothing goes out from it.
+            <div>
+              <p className="mb-1.5 flex items-center gap-1.5 rounded-md bg-note px-2.5 py-1.5 text-[11.5px] text-fg-3">
+                <Lock aria-hidden className="size-3 shrink-0 text-fg-4" />
+                {t("thread.ownerOnly")}
+              </p>
+              <CommentBar ref={commentBar} detail={detail} onPosted={(id) => (posted.current = id)} />
+            </div>
+          ) : canAct ? (
             <>
               <div className="mb-2 flex items-center justify-between gap-2">
                 <div role="group" aria-label={t("thread.replyOrComment")} className="inline-flex items-center rounded-md bg-sunken p-0.5">

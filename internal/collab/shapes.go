@@ -250,12 +250,24 @@ func threadsOut(ctx context.Context, q db.Querier, list []*threadRow) ([]MailThr
 	if err != nil {
 		return nil, err
 	}
+	accountIDs := []uuid.UUID{}
+	for _, t := range list {
+		accountIDs = appendNew(accountIDs, t.AccountID)
+	}
+	rows, err = q.Query(ctx, `SELECT id FROM collab_accounts WHERE id = ANY($1) AND visibility = 'private'`, accountIDs)
+	if err != nil {
+		return nil, err
+	}
+	private, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	if err != nil {
+		return nil, err
+	}
 	for _, t := range list {
 		m := MailThread{ID: t.ID, AccountID: t.AccountID, Subject: t.Subject, Snippet: t.Snippet, Participants: t.Participants,
 			LastMessageAt: t.LastMessageAt, MessageCount: t.MessageCount, Unread: t.Unread, Starred: t.Starred,
 			HasAttachments: t.HasAttachments, NeedsAction: t.NeedsAction, SnoozedUntil: t.SnoozedUntil, FolderIDs: t.FolderIDs, Shared: slices.Contains(sharedList, t.ID),
 			Assignees: assignees[t.ID], CommentCount: comments[t.ID], Category: effectiveCategory(keys[t.AccountID], t.Category),
-			AIDraft: aiDrafts[t.ID]}
+			AIDraft: aiDrafts[t.ID], PrivateAccount: slices.Contains(private, t.AccountID)}
 		if m.Assignees == nil {
 			m.Assignees = []domain.UserRef{}
 		}

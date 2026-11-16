@@ -684,7 +684,7 @@ func (s *service) threadDetail(ctx context.Context, q db.Querier, p *auth.Princi
 	if err != nil {
 		return out, err
 	}
-	account := ThreadAccount{ID: a.ID, Email: a.Email, Name: name, DisplayName: a.DisplayName, Color: a.Color, Provider: a.Provider,
+	account := ThreadAccount{ID: a.ID, OwnerID: a.OwnerID, Email: a.Email, Name: name, DisplayName: a.DisplayName, Color: a.Color, Provider: a.Provider,
 		SignatureHTML: a.SignatureHTML, ReplyAll: a.ReplyAll}
 	if account.Identities, account.DefaultFrom, err = identitiesOut(ctx, s.fillerFor(q, p.WorkspaceID, p.UserID), a, idents); err != nil {
 		return out, err

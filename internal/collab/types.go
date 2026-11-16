@@ -264,6 +264,9 @@ type MailThread struct {
 	// AIDraft is the draft an AI client saved last and no person has taken over, sent or
 	// discarded, so a list can show it and act on it in place (GH#430); null otherwise.
 	AIDraft *ThreadAIDraft `json:"ai_draft"`
+	// PrivateAccount: its account is private, so only the account's owner acts on it, replies
+	// from it or brings people into it ("Who sees what"); others who see it read and comment.
+	PrivateAccount bool `json:"private_account"`
 }
 
 // ThreadAIDraft is a conversation's waiting AI draft, as a list row shows it.
@@ -343,14 +346,16 @@ type MailComment struct {
 
 // ThreadAccount is the account a conversation belongs to, as its detail shows it.
 type ThreadAccount struct {
-	ID            uuid.UUID `json:"id"`
-	Email         string    `json:"email"`
-	Name          string    `json:"name"`
-	DisplayName   string    `json:"display_name"`
-	Color         string    `json:"color"`
-	Provider      string    `json:"provider"`
-	ReplyAll      bool      `json:"reply_all"`
-	SignatureHTML string    `json:"signature_html"`
+	ID uuid.UUID `json:"id"`
+	// OwnerID is who connected it; for a private account the one person who uses its mailbox.
+	OwnerID       *uuid.UUID `json:"owner_id"`
+	Email         string     `json:"email"`
+	Name          string     `json:"name"`
+	DisplayName   string     `json:"display_name"`
+	Color         string     `json:"color"`
+	Provider      string     `json:"provider"`
+	ReplyAll      bool       `json:"reply_all"`
+	SignatureHTML string     `json:"signature_html"`
 	// Identities are the addresses it sends from, its own first; DefaultFrom new mail's.
 	Identities  []MailIdentity `json:"identities"`
 	DefaultFrom string         `json:"default_from"`
