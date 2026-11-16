@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { webcrypto } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const openExternal = vi.fn<(url: string, opts?: unknown) => Promise<void>>();
@@ -9,15 +9,18 @@ const { cancelOAuth, finishOAuth, pkce, startOAuth } = await import("./oauth");
 const API = "https://api.acme.example.com";
 const START = `${API}/v1/auth/oauth/google/start?redirect_to=%2Finbox`;
 const b64url = (b: Buffer) => b.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+// The PKCE S256 challenge (RFC 7636): base64url(SHA-256(verifier)).
+const s256 = async (verifier: string) =>
+  b64url(Buffer.from(await webcrypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
 
 beforeEach(() => openExternal.mockReset().mockResolvedValue(undefined));
 afterEach(() => cancelOAuth());
 
 describe("pkce", () => {
-  it("makes a verifier the contract allows and its S256 challenge", () => {
+  it("makes a verifier the contract allows and its S256 challenge", async () => {
     const { verifier, challenge } = pkce();
     expect(verifier).toMatch(/^[A-Za-z0-9_-]{43,128}$/);
-    expect(challenge).toBe(b64url(createHash("sha256").update(verifier).digest()));
+    expect(challenge).toBe(await s256(verifier));
     expect(pkce().verifier).not.toBe(verifier);
   });
 });
@@ -52,7 +55,7 @@ describe("startOAuth", () => {
     const r = await flow;
     expect(r).toMatchObject({ code: "one-time.code_1" });
     const verifier = (r as { verifier: string }).verifier;
-    expect(b64url(createHash("sha256").update(verifier).digest())).toBe(challenge);
+    expect(await s256(verifier)).toBe(challenge);
     // The flow is spent: a second callback finds nothing waiting.
     expect(finishOAuth(new URL("opendesk://auth/callback?code=again"))).toBe(false);
   });
