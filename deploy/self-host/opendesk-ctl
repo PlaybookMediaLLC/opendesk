@@ -4,7 +4,8 @@
 #
 #   ./opendesk-ctl status               containers, health, version
 #   ./opendesk-ctl logs [service]       follow logs (opendesk, realtime, postgres, caddy)
-#   ./opendesk-ctl backup [dir]         database dump + data volume + .env + SHA256SUMS, into backups/<time>
+#   ./opendesk-ctl backup [dir]         database dump + data volume (+ bundled S3 store) + .env + SHA256SUMS,
+#                                       into backups/<time>
 #   ./opendesk-ctl restore <backup>     put a backup back (stops the app while it runs)
 #   ./opendesk-ctl upgrade [version]    back up, then move to a release (default: newest);
 #                                       goes back to the version before if it does not come up
@@ -140,31 +141,75 @@ cmd_logs() {
     fi
 }
 
-# backup writes three things, and all three are needed to restore:
-#   db.dump       pg_dump custom format of the whole database
-#   data.tar.gz   the opendesk data volume (local attachments, NATS store)
-#   env           the .env, which holds CREDENTIALS_KEY. Without it (or that key
-#                 in CREDENTIALS_KEY_PREVIOUS) every stored mailbox credential in
-#                 db.dump is unreadable.
+# backup writes these, and all of them are needed to restore:
+#   db.dump         pg_dump custom format of the whole database
+#   data.tar.gz     the opendesk data volume (local attachments, NATS store)
+#   s3-data.tar.gz  the bundled S3 store (the minio profile), which then holds the
+#                   attachments and raw email instead of data.tar.gz
+#   env             the .env, which holds CREDENTIALS_KEY. Without it (or that key
+#                   in CREDENTIALS_KEY_PREVIOUS) every stored mailbox credential in
+#                   db.dump is unreadable.
 cmd_backup() {
     backup_to "${1:-$DIR/backups}/$(stamp)"
     say "    It contains the instance's secrets (env). Copy it off this machine and keep it private."
+    if [ -z "${1:-}" ] && [ -d "$DIR/backups" ]; then
+        # Backups taken by hand are never deleted for you (backups/auto keeps its newest $AUTO_BACKUPS).
+        _n=0
+        for _b in "$DIR"/backups/*/; do
+            if [ -d "$_b" ] && [ "$(basename "$_b")" != auto ]; then _n=$((_n + 1)); fi
+        done
+        _size=$(du -sh "$DIR/backups" 2>/dev/null | cut -f1)
+        say "    $DIR/backups holds $_n backups taken by hand (${_size:-?} in all); delete the ones you no longer need."
+    fi
+}
+
+# bundled_s3: attachments live in the bundled S3 store (COMPOSE_PROFILES has minio or s3).
+bundled_s3() {
+    case ",$(env_get COMPOSE_PROFILES | tr -d ' ')," in
+        *,minio,* | *,s3,*) return 0 ;;
+    esac
+    return 1
+}
+
+# copy_volume CONTAINER PATH OUT: PATH in CONTAINER, as a gzipped tar in OUT.
+# A failed copy fails the backup instead of leaving a truncated archive.
+copy_volume() {
+    _failed="$OUT_DIR/.copy-failed"
+    rm -f "$_failed"
+    { dockerc cp "$1":"$2" - || : >"$_failed"; } | gzip >"$3"
+    if [ -e "$_failed" ]; then
+        rm -f "$_failed"
+        die "could not copy $2 out of its container"
+    fi
 }
 
 backup_to() {
     dest=$1
-    mkdir -p "$dest"
-    chmod 700 "$dest"
+    (umask 077; mkdir -p "$dest")
+    chmod 700 "$dest" "$(dirname "$dest")"
+    OUT_DIR=$dest
+    files="db.dump data.tar.gz"
     info "Dumping the database"
     compose exec -T postgres pg_dump -U opendesk -d opendesk -Fc >"$dest/db.dump"
     [ -s "$dest/db.dump" ] || die "pg_dump wrote nothing"
     info "Copying the data volume"
     cid=$(compose ps -aq opendesk)
     [ -n "$cid" ] || die "the opendesk container does not exist; start it first"
-    dockerc cp "$cid":/data - | gzip >"$dest/data.tar.gz"
+    copy_volume "$cid" /data "$dest/data.tar.gz"
+    if bundled_s3; then
+        info "Copying the bundled S3 store"
+        s3cid=$(compose ps -aq s3)
+        [ -n "$s3cid" ] || die "the s3 container does not exist; start it first (opendesk-ctl start)"
+        copy_volume "$s3cid" /data "$dest/s3-data.tar.gz"
+        files="$files s3-data.tar.gz"
+    elif [ "$(env_get STORAGE_DRIVER)" = s3 ]; then
+        warn "Attachments are in the S3 bucket $(env_get S3_BUCKET) at $(env_get S3_ENDPOINT), which this backup does not hold: back that bucket up with its provider."
+    fi
     (umask 077; cp "$DIR/.env" "$dest/env")
     env_get OPENDESK_VERSION >"$dest/VERSION"
-    (cd "$dest" && for f in db.dump data.tar.gz env VERSION; do printf '%s  %s\n' "$(sha256 "$f")" "$f"; done) >"$dest/SHA256SUMS"
+    files="$files env VERSION"
+    # shellcheck disable=SC2086
+    (cd "$dest" && for f in $files; do printf '%s  %s\n' "$(sha256 "$f")" "$f"; done) >"$dest/SHA256SUMS"
     keep_owner "$(dirname "$dest")"
     ok "Backup written to $dest"
 }
@@ -181,13 +226,41 @@ verify_backup() {
     ok "Backup files match their checksums"
 }
 
+# helper_image: the image of the running Postgres container, already on this
+# machine, which unpacks volumes during a restore (the app images have no shell).
+helper_image() {
+    dockerc inspect --format '{{.Image}}' "$(compose ps -aq postgres)"
+}
+
+# restore_volume CONTAINER ARCHIVE [OWNER]: replaces /data of CONTAINER's volume with
+# ARCHIVE, through a short-lived container that mounts the same volume (the app
+# containers' roots are read-only). The archive keeps its owners unless OWNER is given.
+restore_volume() {
+    _chown=""
+    [ -z "${3:-}" ] || _chown=" && chown -R $3 /data"
+    gunzip -c "$2" | dockerc run --rm -i --entrypoint /bin/sh --volumes-from "$1" "$(helper_image)" \
+        -c "find /data -mindepth 1 -delete && tar -xf - -C /$_chown"
+}
+
 cmd_restore() {
     src=${1:-}
     if [ -z "$src" ] || [ ! -f "$src/db.dump" ]; then
         die "usage: opendesk-ctl restore <backup dir containing db.dump>"
     fi
     verify_backup "$src"
-    say "This replaces the database and data volume of $DIR with $src."
+    # A dump from a newer release can hold migrations this one does not know.
+    backup_version=$(cat "$src/VERSION" 2>/dev/null || true)
+    running_version=$(env_get OPENDESK_VERSION)
+    if is_release "$backup_version" && is_release "$running_version" && newer "$backup_version" "$running_version"; then
+        die "The backup was taken on $backup_version, newer than this install's $running_version. Upgrade first (opendesk-ctl upgrade $backup_version), then restore. Nothing was changed."
+    fi
+    if [ -f "$src/s3-data.tar.gz" ] && ! bundled_s3; then
+        die "The backup holds the bundled S3 store, which this install does not run. Put its storage settings back first (STORAGE_DRIVER, S3_* and COMPOSE_PROFILES from $src/env), then restore. Nothing was changed."
+    fi
+    if [ ! -f "$src/s3-data.tar.gz" ] && bundled_s3; then
+        warn "The backup has no bundled S3 store (s3-data.tar.gz), so the attachments stored there now stay as they are."
+    fi
+    say "This replaces the database and data volumes of $DIR with $src."
     if [ "${OPENDESK_YES:-0}" != 1 ]; then
         printf '  Type "restore" to continue: '
         read -r answer </dev/tty || answer=""
@@ -212,11 +285,16 @@ cmd_restore() {
     compose exec -T postgres pg_restore -U opendesk -d opendesk --clean --if-exists --no-owner --single-transaction <"$src/db.dump"
     if [ -f "$src/data.tar.gz" ]; then
         info "Restoring the data volume"
-        # The app container's root is read-only, so the archive is unpacked
-        # by a short-lived container that mounts the same volume.
         cid=$(compose ps -aq opendesk)
-        gunzip -c "$src/data.tar.gz" | dockerc run --rm -i --volumes-from "$cid" alpine:3.22 \
-            sh -c 'find /data -mindepth 1 -delete && tar -xf - -C / && chown -R 65532:65532 /data'
+        [ -n "$cid" ] || { compose up --no-start opendesk; cid=$(compose ps -aq opendesk); }
+        restore_volume "$cid" "$src/data.tar.gz" 65532:65532
+    fi
+    if [ -f "$src/s3-data.tar.gz" ]; then
+        info "Restoring the bundled S3 store"
+        compose stop s3
+        s3cid=$(compose ps -aq s3)
+        [ -n "$s3cid" ] || { compose up --no-start s3; s3cid=$(compose ps -aq s3); }
+        restore_volume "$s3cid" "$src/s3-data.tar.gz"
     fi
     compose up -d
     ok "Restored from $src"
@@ -655,7 +733,7 @@ cmd_auto_update() {
 }
 
 usage() {
-    sed -n '3,20p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,21p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 main() {

@@ -784,12 +784,13 @@ version or a failed run (`UPDATE_CHECK=false` stops the server looking).
 
 The same, by hand:
 
-**Back up.** Three things, all needed for a restore:
+**Back up.** These, all needed for a restore:
 
 ```sh
 cd /opt/opendesk
 docker compose exec -T postgres pg_dump -U opendesk -d opendesk -Fc > db.dump
 docker cp "$(docker compose ps -q opendesk)":/data - | gzip > data.tar.gz   # attachments, NATS store
+docker cp "$(docker compose ps -q s3)":/data - | gzip > s3-data.tar.gz      # only with the bundled S3 store (minio profile)
 cp .env env                                                                 # CREDENTIALS_KEY lives here
 ```
 
@@ -807,8 +808,13 @@ cp <backup>/env .env                          # if this is a new machine
 docker compose up -d postgres --wait
 docker compose stop opendesk realtime caddy
 docker compose exec -T postgres pg_restore -U opendesk -d opendesk --clean --if-exists --no-owner --single-transaction < <backup>/db.dump
-gunzip -c <backup>/data.tar.gz | docker run --rm -i --volumes-from "$(docker compose ps -aq opendesk)" alpine:3.22 \
-  sh -c 'find /data -mindepth 1 -delete && tar -xf - -C / && chown -R 65532:65532 /data'
+helper=$(docker inspect --format '{{.Image}}' "$(docker compose ps -aq postgres)")   # has a shell and tar
+gunzip -c <backup>/data.tar.gz | docker run --rm -i --entrypoint /bin/sh --volumes-from "$(docker compose ps -aq opendesk)" "$helper" \
+  -c 'find /data -mindepth 1 -delete && tar -xf - -C / && chown -R 65532:65532 /data'
+# only with the bundled S3 store:
+docker compose stop s3
+gunzip -c <backup>/s3-data.tar.gz | docker run --rm -i --entrypoint /bin/sh --volumes-from "$(docker compose ps -aq s3)" "$helper" \
+  -c 'find /data -mindepth 1 -delete && tar -xf - -C /'
 docker compose up -d
 ```
 

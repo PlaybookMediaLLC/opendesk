@@ -13,6 +13,8 @@
 #   * a release after v0.2.0 needs a SHA256SUMS signature by the release key
 #   * a release file that does not match SHA256SUMS stops the install
 #   * install.sh.sha256 matches install.sh
+#   * opendesk-ctl backup holds the bundled S3 store when it is in use, and
+#     restore puts it back (against a stand-in docker)
 #
 # Run by `make installer-check` and the Installer job in CI.
 set -euo pipefail
@@ -215,7 +217,7 @@ openssl ec -in deploy/install/release-signing.pub -pubin -noout 2>/dev/null || f
 for f in "$SCRIPT" deploy/self-host/opendesk-ctl; do
   grep -q "$(sed -n 2p deploy/install/release-signing.pub)" "$f" || fail "$f does not embed deploy/install/release-signing.pub"
 done
-fingerprint=$(openssl pkey -pubin -in deploy/install/release-signing.pub -outform DER | sha256sum | cut -d' ' -f1)
+fingerprint=$(openssl pkey -pubin -in deploy/install/release-signing.pub -outform DER | openssl dgst -sha256 | sed 's/.*= *//')
 grep -q "^# $fingerprint\$" deploy/README.md || fail "deploy/README.md does not publish the fingerprint of deploy/install/release-signing.pub ($fingerprint)"
 pass "installs a release after v0.2.0 only with a signature that holds"
 
@@ -225,5 +227,44 @@ if sh "$SCRIPT" --yes --no-start --no-color --domain localhost --version v0.0.0-
 fi
 [[ ! -e $work/tampered/.env ]] || fail "a failed checksum still wrote files"
 pass "refuses release files that do not match SHA256SUMS"
+
+# opendesk-ctl backup and restore against a stand-in docker that serves each
+# container's /data from a directory and records what a restore unpacks.
+ctl="$work/ctl"
+mkdir -p "$ctl/bin" "$ctl/inst" "$ctl/vol/opendesk/data" "$ctl/vol/s3/data"
+echo attachment >"$ctl/vol/opendesk/data/local.txt"
+echo object >"$ctl/vol/s3/data/object.bin"
+{
+  printf '#!/bin/sh\nctl=%s\n' "$ctl"
+  cat <<'STUB'
+case "$1" in
+  info) exit 0 ;;
+  inspect) echo sha256:helper ;;
+  cp) c=${2%%:*}; tar -C "$ctl/vol/${c#cid-}" -cf - data ;;
+  run) for a; do case "$a" in cid-*) c=${a#cid-} ;; esac; done
+       mkdir -p "$ctl/restored/$c" && tar -C "$ctl/restored/$c" -xf - ;;
+  compose) case "$2" in
+      ps) echo "cid-$4" ;;
+      exec) case "$*" in *pg_dump*) echo dump ;; *pg_restore*) cat >/dev/null ;; esac ;;
+    esac ;;
+esac
+STUB
+} >"$ctl/bin/docker"
+chmod +x "$ctl/bin/docker"
+cp deploy/self-host/opendesk-ctl "$ctl/inst/"
+: >"$ctl/inst/docker-compose.yml"
+printf 'OPENDESK_VERSION=v1.2.0\nCOMPOSE_PROFILES=minio\nSTORAGE_DRIVER=s3\nCREDENTIALS_KEY=k\n' >"$ctl/inst/.env"
+PATH="$ctl/bin:$PATH" sh "$ctl/inst/opendesk-ctl" backup "$ctl/backups" >/dev/null || fail "opendesk-ctl backup failed"
+bk=$(ls -d "$ctl/backups"/*)
+tar -tzf "$bk/s3-data.tar.gz" | grep -qx 'data/object.bin' || fail "a backup with the bundled S3 store in use does not hold it"
+grep -q '  s3-data.tar.gz$' "$bk/SHA256SUMS" || fail "SHA256SUMS does not list s3-data.tar.gz"
+OPENDESK_YES=1 PATH="$ctl/bin:$PATH" sh "$ctl/inst/opendesk-ctl" restore "$bk" >/dev/null || fail "opendesk-ctl restore failed"
+[[ -f $ctl/restored/s3/data/object.bin && -f $ctl/restored/opendesk/data/local.txt ]] ||
+  fail "restore did not put back the data volume and the bundled S3 store"
+printf 'OPENDESK_VERSION=v1.2.0\nCREDENTIALS_KEY=k\n' >"$ctl/inst/.env"
+if OPENDESK_YES=1 PATH="$ctl/bin:$PATH" sh "$ctl/inst/opendesk-ctl" restore "$bk" >/dev/null 2>&1; then
+  fail "restore put a bundled S3 store back into an install that does not run one"
+fi
+pass "opendesk-ctl backs up and restores the bundled S3 store"
 
 echo "installer checks passed"
