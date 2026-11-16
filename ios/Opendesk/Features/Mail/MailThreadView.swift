@@ -884,7 +884,7 @@ struct MailMessageCard: View {
                 .background(Theme.sunken, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).strokeBorder(Theme.lineSoft, lineWidth: 1))
             }
-            MailBodyView(html: held.html)
+            MailBodyView(html: held.html, remoteImages: imagesAllowed)
                 .padding(.horizontal, HTMLText.isDesignedEmail(source) ? -6 : 0)
             if !message.files.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {

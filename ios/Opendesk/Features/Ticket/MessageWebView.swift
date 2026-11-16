@@ -3,13 +3,14 @@ import WebKit
 
 /// Stored email HTML (sanitized by the server with bluemonday) in a web view
 /// with JavaScript off and a CSP that only lets images load (https, data:,
-/// and the API's own attachments), with no referrer. With `remoteImages` off,
-/// images from other sites (including CSS `url()`) stay blocked until the
-/// reader asks. It sizes itself to the content; links open outside the app.
+/// and the API's own attachments), with no referrer. With `remoteImages` off (the
+/// default), images and fonts from other sites (including CSS `url()`) stay blocked
+/// until the reader asks; a caller passes `true` only for mail it sent itself or once
+/// the reader asked. It sizes itself to the content; links open outside the app.
 struct MessageWebView: UIViewRepresentable {
     let html: String
     let baseURL: URL?
-    var remoteImages = true
+    var remoteImages = false
     @Binding var height: CGFloat
     @Environment(\.colorScheme) private var scheme
 

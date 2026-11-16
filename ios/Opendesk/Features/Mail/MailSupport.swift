@@ -192,9 +192,13 @@ enum MailFiles {
 // MARK: - Message bodies
 
 /// A message's body: plain mail as text, which reads crisper and selects natively; rich mail
-/// in the sandboxed web view, measured again once it has its real width.
+/// in the sandboxed web view, measured again once it has its real width. Images and fonts
+/// from other sites load only once the reader asked (`remoteImages`): the web view's CSP
+/// refuses them before that, whatever `MailHTML.holdingImages` left in the HTML.
 struct MailBodyView: View {
     let html: String
+    var remoteImages = false
+    @Environment(AppEnvironment.self) private var env
     @State private var height: CGFloat = 40
     @State private var settled = false
 
@@ -209,7 +213,7 @@ struct MailBodyView: View {
 
     var body: some View {
         if HTMLText.needsRichRendering(html) {
-            MessageWebView(html: html, baseURL: nil, height: $height)
+            MessageWebView(html: html, baseURL: env.session.instance.apiURL, remoteImages: remoteImages, height: $height)
                 .frame(height: max(height, 24))
                 .onChange(of: height) { _, _ in
                     guard !settled else { return }

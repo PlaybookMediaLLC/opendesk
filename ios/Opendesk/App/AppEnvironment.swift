@@ -27,7 +27,12 @@ enum Appearance: String, CaseIterable, Identifiable {
 @MainActor
 @Observable
 final class AppEnvironment {
-    let session = SessionStore()
+    /// Created first, after the Keychain items of a deleted install are gone, so a
+    /// reinstall starts signed out (`KeychainStore.forgetPreviousInstall`).
+    let session: SessionStore = {
+        KeychainStore.forgetPreviousInstall()
+        return SessionStore()
+    }()
     let realtime = RealtimeService()
     let directory = DirectoryStore()
     let inbox = InboxStore()

@@ -68,15 +68,22 @@ actor APIClient {
 
     private var storedRefresh: String? {
         guard let tokenKey else { return pendingRefresh }
-        return KeychainStore.get(tokenKey)
+        return KeychainStore.get(tokenKey) ?? pendingRefresh
     }
 
+    /// Files the token in the Keychain; one the Keychain refuses stays in memory, so the
+    /// session lasts until the app quits instead of ending at the next refresh.
     private func storeRefresh(_ value: String?) {
         guard let tokenKey else {
             pendingRefresh = value
             return
         }
-        if let value { KeychainStore.set(value, for: tokenKey) } else { KeychainStore.remove(tokenKey) }
+        if let value {
+            pendingRefresh = KeychainStore.set(value, for: tokenKey) ? nil : value
+        } else {
+            pendingRefresh = nil
+            KeychainStore.remove(tokenKey)
+        }
     }
 
     func hasRefreshToken() -> Bool { storedRefresh != nil }

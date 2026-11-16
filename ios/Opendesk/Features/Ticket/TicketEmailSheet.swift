@@ -35,7 +35,8 @@ struct EmailDocumentFrame: View {
     @State private var height: CGFloat = 320
 
     var body: some View {
-        MessageWebView(html: html, baseURL: env.session.instance.apiURL, height: $height)
+        // The workspace's own outbound email, as it goes out.
+        MessageWebView(html: html, baseURL: env.session.instance.apiURL, remoteImages: true, height: $height)
             .frame(height: height)
             .padding(12)
             .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
