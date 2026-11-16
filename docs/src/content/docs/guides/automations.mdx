@@ -44,7 +44,7 @@ Under **When**, pick the trigger.
 | **A ticket is created** | A new ticket arrives on any channel. |
 | **The customer replies** | The customer sends a new message on a ticket. |
 | **An agent replies** | An agent sends a reply. |
-| **A ticket is updated** | A ticket's fields change, such as its status, priority or team. |
+| **A ticket is updated** | A field the rule's conditions check changes, such as its status, priority or team. See [Rules on updates](#rules-on-updates). |
 | **A call ends** | A phone call on the ticket ended, with conditions on the call's outcome, direction, time, line and labels. See [Phone calls with Aircall](/guides/aircall/#missed-calls-an-automation) and [with Voys](/guides/voys/#missed-calls). |
 
 </Step>
@@ -95,6 +95,14 @@ Each rule sees the ticket as the rules above it left it. A rule that sets a team
 | **Ask Ollie a yes/no question** | A question Ollie answers about the ticket. See below. |
 | Ticket and contact fields | A [custom field](/guides/labels-and-custom-fields/#custom-fields) of the ticket or of its contact. |
 
+## Rules on updates
+
+A rule on **A ticket is updated** runs only when the update changed a field one of its conditions checks. "If Status is Solved, send a reply" runs when a ticket becomes solved, not again each time someone adds a label or changes a field on the solved ticket. A rule with no conditions runs on every update.
+
+Conditions on the status, priority, severity, assignee, team, brand, mailbox, labels, sentiment and custom fields count. A rule on updates needs at least one of them: the message text, the sender, the channel, the chat widget, the address written to and a question for Ollie never change in an update.
+
+Every field that counts also takes **changed**, which matches when that field changed in the update, whatever its value: "If Assignee changed, add an internal note".
+
 Text fields compare with **contains**, **doesn't contain**, **contains any of**, **contains none of**, **is** and **is not**. **Contains any of** and **contains none of** take a list of phrases, one per line (up to 100), and match when the text holds at least one of them, or none of them. Custom fields use the comparisons of their type, like **is at least** for a number, **is any of** for a select, and **is set** or **is empty**.
 
 ## Actions
@@ -124,7 +132,7 @@ A **Send a reply** action is careful not to start mail loops or answer machines:
 
 - It goes out marked as an automatic message, so other systems do not reply to it.
 - It is skipped for automatic, bulk or list mail, mail that asks for no automatic answers, mail from a no-reply address or from one of your own addresses, and mail that failed sender checks.
-- It is sent at most 3 times per ticket, and 10 times per customer an hour.
+- It is sent at most 3 times per ticket, and 10 times per customer an hour, by email and in chats alike.
 
 </Fold>
 

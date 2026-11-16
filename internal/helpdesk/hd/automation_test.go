@@ -107,3 +107,41 @@ func TestValidateMergeAction(t *testing.T) {
 		}
 	}
 }
+
+// A ticket_updated automation runs for an update of a field its conditions are on; one
+// without conditions runs for every update.
+func TestUpdateRelevant(t *testing.T) {
+	status := []hd.Condition{{Field: "status", Op: "equals", Value: "solved"}}
+	cases := []struct {
+		cs      []hd.Condition
+		changes []string
+		want    bool
+	}{
+		{status, []string{"status"}, true},
+		{status, []string{"priority", "tags"}, false},
+		{nil, []string{"subject"}, true},
+		{[]hd.Condition{{Field: "tag", Op: "contains", Value: "vip"}}, []string{"tags"}, true},
+		{[]hd.Condition{{Field: "sentiment", Op: "equals", Value: "negative"}}, []string{"custom"}, true},
+		{[]hd.Condition{{Field: "field.plan", Op: "eq", Value: "pro"}}, []string{"fields"}, true},
+		{[]hd.Condition{{Field: "contact.field.tier", Op: "eq", Value: "gold"}}, []string{"contact_id"}, true},
+		{[]hd.Condition{{Field: "channel", Op: "equals", Value: "chat"}}, []string{"status"}, false},
+		{status, []string{}, false},
+	}
+	for i, c := range cases {
+		if got := hd.UpdateRelevant(c.cs, c.changes); got != c.want {
+			t.Errorf("case %d: UpdateRelevant = %v, want %v", i, got, c.want)
+		}
+	}
+	if err := hd.ValidateConditionTrigger("ticket_updated", []hd.Condition{{Field: "channel", Op: "equals", Value: "chat"}}); err == nil {
+		t.Error("a ticket_updated automation on fields no update changes was accepted")
+	}
+	if err := hd.ValidateConditionTrigger("ticket_updated", nil); err != nil {
+		t.Error(err)
+	}
+	if err := hd.ValidateConditionTrigger("ticket_created", []hd.Condition{{Field: "status", Op: hd.OpChanged}}); err == nil {
+		t.Error("changed accepted on ticket_created")
+	}
+	if err := hd.ValidateConditionTrigger("ticket_updated", []hd.Condition{{Field: "status", Op: hd.OpChanged}}); err != nil {
+		t.Error(err)
+	}
+}

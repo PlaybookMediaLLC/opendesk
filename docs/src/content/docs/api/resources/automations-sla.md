@@ -21,7 +21,7 @@ type Automation = {
   trigger: "ticket_created" | "customer_replied" | "agent_replied" | "ticket_updated";
   conditions: { field: "subject" | "body" | "from_email" | "channel" | "mailbox_id" | "priority" | "severity" | "status" | "tag"
                      | "sentiment" | "ai_decide" | `field.${string}` | `contact.field.${string}`;
-                op: "contains" | "not_contains" | "equals" | "not_equals" | "any" | "none" | FieldOp;
+                op: "contains" | "not_contains" | "equals" | "not_equals" | "any" | "none" | "changed" | FieldOp;
                 value: string /* up to 500 characters; any / none: phrases, one per line */;
                 question?: string /* ai_decide only: 3..300 characters of plain text */ }[];
   actions: { type: "set_status" | "set_priority" | "set_severity" | "assign_user" | "assign_replier" | "assign_team" | "add_tag" | "remove_tag"
@@ -39,7 +39,12 @@ type Automation = {
 // assign_replier (value ""): assigns the agent who wrote the reply the run is about, as on agent_replied;
 // skipped when no agent wrote it (a customer's message, an automation, API or AI reply, or no message).
 // ai_decide: gt / lt with value a probability 0.01..0.99; at most 3 per automation; all of one
-// trigger run are asked in one call (charged once to the AI balance). It does not hold when no decision engine answers.
+// trigger run are asked in one call (charged once to the AI balance), outside the run's transaction. It does not hold
+// when no decision engine answers.
+// ticket_updated: an automation runs only when the update changed a field one of its conditions is on (priority,
+// severity, status, tag, sentiment, subject, assignee_id, team_id, brand_id, mailbox_id, a custom field); without
+// conditions it runs on every update, and with conditions on none of those fields it is 422. changed (value "")
+// holds when its field changed in the update; ticket_updated only.
 
 type SlaPolicy = {
   id: string;
@@ -47,10 +52,17 @@ type SlaPolicy = {
   priority: Priority | null;
   first_response_minutes: number;
   resolution_minutes: number;
+  business_hours: boolean;
+  team_id: string | null;
   enabled: boolean;
   position: number;
 };
 ```
+
+A ticket's `sla` reads its current cycle: targets run from its creation, or from the moment a solved ticket
+opened again; the resolution target stands still while the ticket is pending or on hold (`paused_at`) and
+moves by the time it waited; `breached` stays true once a breach is recorded in the cycle, solved or not.
+See [SLA policies](/guides/sla-policies/#reopened-tickets).
 
 Conditions on `field.<key>` (the ticket's custom field) and `contact.field.<key>` (its contact's) take the [operators of the field's type](/api/resources/labels-fields/#filter-and-sort); `equals` and `not_equals` mean `eq` and `ne`. `set_field` writes `value` as a string: `"12.5"`, `"true"`, `"2026-10-11"`, comma separated option ids, or `""` to clear. It is checked when the automation is saved, and skipped at run time if the field was archived or deleted since. `add_tag` respects exclusive label groups.
 

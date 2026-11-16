@@ -44,7 +44,7 @@ func (s *Service) installHooks() {
 	}
 	h := &hd.AIHooks{}
 	if s.canTriage() {
-		h.AutoTriage, h.Triage = s.autoTriage, s.triageAction
+		h.AutoTriage, h.TriagePrepare, h.TriageApply = s.autoTriage, s.triagePrepare, s.triageApply
 	}
 	// A workspace may bring its own decision engine (decisions_key.go), so conditions
 	// are asked whenever the instance has AI.

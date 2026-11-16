@@ -65,7 +65,26 @@ opendesk goes down the list and takes the first enabled policy whose priority is
 - **First response due** is met by the first agent reply.
 - **Resolution due** is met when the ticket is solved.
 
-The policy is picked again when the ticket's priority or team changes, and the due times are worked out again from the ticket's creation. Disabling or editing a policy does not change the due times of tickets it was already applied to until one of those changes.
+The policy is picked again when the ticket's priority or team changes, and the due times are worked out again from the start of the ticket's current cycle (below). Disabling or editing a policy does not change the due times of tickets it was already applied to until one of those changes.
+
+## Reopened tickets
+
+When a solved ticket opens again, its SLA starts over from that moment, with fresh targets:
+
+- When the customer's message reopens it, a **reply** is due by the policy's first response target, counted from their message, and the **resolution** by its resolution target, counted from the same moment.
+- When someone on the team reopens it, only the resolution target runs again; no reply is due.
+
+The earlier round's targets and breaches stay in the timeline and reports, and a reopen never counts as a breach of them.
+
+## Waiting on the customer
+
+While a ticket is **Pending** or **On hold**, the resolution clock stands still. When the ticket is open again, the time it waited is added to the resolution due time, counted in business hours when the policy counts them. The first response target keeps running: a ticket set to Pending without a reply can still miss it.
+
+<Callout type="note" title="An example">
+
+A ticket has 8 hours to be solved. After 2 hours the agent asks the customer for logs and sets it to Pending. The customer answers the next day, and the ticket opens again with 6 hours left, however long the wait was.
+
+</Callout>
 
 ## Business hours
 
@@ -85,7 +104,7 @@ A team that works other hours, like a support team in another time zone, can hav
 
 <Screenshot src="/guides/sla/team-hours" alt="A team's Hours section: the Workspace hours and Own schedule choice ringed as 1, with Own schedule picked, and the team's own time zone and weekly hours ringed as 2" />
 
-A team's hours are used for its SLA timers, for whether the chat widget shows as open, and for Ollie's answers outside hours.
+A team's hours are used for its SLA timers, for whether the chat widget shows as open, and for Ollie's answers outside hours. A team with its own schedule turned off works around the clock: its SLA timers count every minute, whatever the workspace hours. Choose **Workspace hours** to follow the workspace.
 
 <Callout type="note" title="An example">
 
@@ -128,6 +147,8 @@ When a target passes unmet, the ticket is marked as breached:
 - an activity is added to the timeline, such as "First response target was missed";
 - the assignee gets an **SLA breached** [notification](/guides/notifications/);
 - the breach counts in [reports](/guides/reports/), under **SLA breached**.
+
+A ticket solved after a target passed is marked as breached when it is solved, even if the check that runs every minute had not reached it yet, without a notification. A breached ticket stays **Missed** once solved, and lowering its priority afterwards does not take the breach back.
 
 [Automations](/guides/automations/) can react to tickets as they change, for example raising the priority of a ticket in a queue that is falling behind.
 

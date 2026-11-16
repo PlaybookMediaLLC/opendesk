@@ -335,10 +335,18 @@ func prefixQuery(q string) string {
 	return strings.Join(words, " & ")
 }
 
-// Sort keys.
-const dueExpr = `COALESCE(CASE WHEN t.sla_policy_id IS NULL THEN NULL
-	WHEN t.first_responded_at IS NULL THEN LEAST(t.first_response_due_at, t.resolution_due_at)
-	ELSE t.resolution_due_at END, 'infinity'::timestamptz)`
+// slaDueSQL is the SLA due time that applies to a ticket now, on columns of alias a ("t."
+// or ""): the reply target while the team has yet to reply in the cycle, else the resolution
+// target while its clock runs (NULL while it stands still: pending, on hold).
+func slaDueSQL(a string) string {
+	return `(CASE WHEN ` + domain.SLAReplyPendingSQL(strings.TrimSuffix(a, ".")) + ` THEN ` + a + `first_response_due_at
+		WHEN ` + a + `sla_paused_at IS NULL THEN ` + a + `resolution_due_at END)`
+}
+
+// Sort keys: the reply target or the running resolution target, whichever comes first.
+var dueExpr = `COALESCE(CASE WHEN t.sla_policy_id IS NULL THEN NULL
+	WHEN ` + domain.SLAReplyPendingSQL("t") + ` THEN LEAST(t.first_response_due_at, CASE WHEN t.sla_paused_at IS NULL THEN t.resolution_due_at END)
+	WHEN t.sla_paused_at IS NULL THEN t.resolution_due_at END, 'infinity'::timestamptz)`
 
 const priorityExpr = `(CASE t.priority WHEN 'urgent' THEN 4 WHEN 'high' THEN 3 WHEN 'normal' THEN 2 ELSE 1 END)`
 
@@ -435,8 +443,12 @@ func ticketDue(t domain.Ticket) *time.Time {
 	if t.SLA == nil {
 		return nil
 	}
-	if t.FirstRespondedAt == nil {
-		a, b := t.SLA.FirstResponseDueAt, t.SLA.ResolutionDueAt
+	res := t.SLA.ResolutionDueAt
+	if t.SLA.PausedAt != nil {
+		res = nil // the resolution clock stands still
+	}
+	if t.SLA.ReplyPending {
+		a, b := t.SLA.FirstResponseDueAt, res
 		switch {
 		case a == nil:
 			return b
@@ -448,7 +460,7 @@ func ticketDue(t domain.Ticket) *time.Time {
 			return b
 		}
 	}
-	return t.SLA.ResolutionDueAt
+	return res
 }
 
 type ticketCursor struct {
@@ -636,8 +648,8 @@ func statCols(a, cond string) string {
 			AND %[1]slast_customer_message_at >= %[1]slast_message_at - interval '1 second'),
 		count(*) FILTER (WHERE (%[2]s) AND %[1]spriority = 'urgent'),
 		count(*) FILTER (WHERE (%[2]s) AND %[1]sstatus NOT IN ('solved','closed') AND (
-			CASE WHEN %[1]sfirst_responded_at IS NULL THEN %[1]sfirst_response_due_at ELSE %[1]sresolution_due_at END < now()
-			OR %[1]ssla_first_response_breached_at IS NOT NULL OR %[1]ssla_resolution_breached_at IS NOT NULL))`, a, cond)
+			%[3]s < now()
+			OR %[1]ssla_first_response_breached_at IS NOT NULL OR %[1]ssla_resolution_breached_at IS NOT NULL))`, a, cond, slaDueSQL(a))
 }
 
 func (s *TicketStats) dest() []any { return []any{&s.Awaiting, &s.Urgent, &s.Overdue} }
@@ -828,14 +840,15 @@ type TicketListSummary struct {
 
 // summaryCols are the columns statCols and summaryDueSoon read.
 const summaryCols = `t.status, t.priority, t.last_message_at, t.last_customer_message_at, t.first_responded_at,
-	t.first_response_due_at, t.resolution_due_at, t.sla_first_response_breached_at, t.sla_resolution_breached_at`
+	t.first_response_due_at, t.resolution_due_at, t.sla_first_response_breached_at, t.sla_resolution_breached_at,
+	t.sla_started_at, t.sla_responded_at, t.sla_paused_at`
 
 // summaryDueSoon is the due time that applies (as in statCols) falling within the next hour,
 // with no breach recorded: never an overdue ticket.
-const summaryDueSoon = `t.status NOT IN ('solved','closed')
+var summaryDueSoon = `t.status NOT IN ('solved','closed')
 	AND t.sla_first_response_breached_at IS NULL AND t.sla_resolution_breached_at IS NULL
-	AND CASE WHEN t.first_responded_at IS NULL THEN t.first_response_due_at ELSE t.resolution_due_at END >= now()
-	AND CASE WHEN t.first_responded_at IS NULL THEN t.first_response_due_at ELSE t.resolution_due_at END < now() + interval '1 hour'`
+	AND ` + slaDueSQL("t.") + ` >= now()
+	AND ` + slaDueSQL("t.") + ` < now() + interval '1 hour'`
 
 // ticketListSummary counts the tickets listTickets pages through for f, with the same filters
 // and visibility. The tickets are read through the list's own WHERE, without its ORDER BY, and

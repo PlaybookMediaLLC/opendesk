@@ -56,7 +56,7 @@ const (
 
 type Condition struct {
 	Field string `json:"field" maxLength:"60" doc:"subject, body, from_email, channel, mailbox_id, priority, severity, status, tag, sentiment, ai_decide, assignee_id, team_id, brand_id, widget_id, received_at, field.<key> (ticket custom field), contact.field.<key>, or on call_ended: call_outcome, call_direction, call_missed_reason, call_time, call_line, call_tag"`
-	Op    string `json:"op" enum:"contains,not_contains,equals,not_equals,eq,ne,gt,gte,lt,lte,any,all,none,set,not_set" doc:"eq is an alias of equals, ne of not_equals; custom fields take the ops of their type"`
+	Op    string `json:"op" enum:"contains,not_contains,equals,not_equals,eq,ne,gt,gte,lt,lte,any,all,none,set,not_set,changed" doc:"eq is an alias of equals, ne of not_equals; custom fields take the ops of their type; changed (ticket_updated automations) holds when the field changed in the update"`
 	Value string `json:"value" maxLength:"5000" doc:"up to 500 characters; any and none on subject, body, from_email, received_at and tag: up to 100 phrases, one per line"`
 	// Question is the yes/no question of an ai_decide condition (contracts/ai.md "Automations").
 	Question string `json:"question,omitempty" maxLength:"300" doc:"ai_decide only: a yes/no question about the ticket"`
@@ -97,8 +97,75 @@ func ConditionFieldKey(field string) (entity, key string, ok bool) {
 	return "", "", false
 }
 
-// ValidateConditions checks conditions against the enums and the workspace.
+// OpChanged is the op of a condition that holds when its field changed in the update a
+// ticket_updated run is about (contracts/api.md "Automations"); the value is unused.
+const OpChanged = "changed"
+
+// conditionChanges maps a condition field to the ticket change (TicketTriggerArgs.Changes)
+// that can make it start or stop holding.
+var conditionChanges = map[string]string{"subject": "subject", "priority": "priority", "severity": "severity", "status": "status",
+	"tag": "tags", "sentiment": "custom", "assignee_id": "assignee_id", "team_id": "team_id", "brand_id": "brand_id", "mailbox_id": "mailbox_id"}
+
+// ConditionChange is the ticket change that bears on a condition field: a ticket custom
+// field is "fields" (any of them), a contact field "contact_id" (another contact). ok is
+// false for what an update of the ticket never changes (the message's body and sender, the
+// channel, the widget, the address written to, ai_decide, call facts).
+func ConditionChange(field string) (change string, ok bool) {
+	if entity, _, isField := ConditionFieldKey(field); isField {
+		if entity == domain.FieldEntityContact {
+			return "contact_id", true
+		}
+		return "fields", true
+	}
+	change, ok = conditionChanges[field]
+	return change, ok
+}
+
+// UpdateRelevant reports whether a ticket_updated automation runs for an update that
+// changed changes: when one of its conditions is on a field the update changed. An
+// automation without conditions runs on every update.
+func UpdateRelevant(cs []Condition, changes []string) bool {
+	if len(cs) == 0 {
+		return true
+	}
+	for _, c := range cs {
+		if ch, ok := ConditionChange(c.Field); ok && slices.Contains(changes, ch) {
+			return true
+		}
+	}
+	return false
+}
+
+// ValidateConditionTrigger checks conditions against an automation's trigger: changed holds
+// only on ticket_updated, and a ticket_updated automation with conditions needs one on a field
+// an update changes, since it runs only when such a field changed (UpdateRelevant).
+func ValidateConditionTrigger(trigger string, cs []Condition) error {
+	if trigger != jobs.TriggerTicketUpdated {
+		if slices.ContainsFunc(cs, func(c Condition) bool { return c.Op == OpChanged }) {
+			return httpx.Validation("changed conditions take the ticket_updated trigger")
+		}
+		return nil
+	}
+	if len(cs) > 0 && !slices.ContainsFunc(cs, func(c Condition) bool { _, ok := ConditionChange(c.Field); return ok }) {
+		return httpx.Validation("a ticket_updated automation runs when a field of its conditions changes: add a condition on " +
+			"subject, priority, severity, status, tag, sentiment, assignee_id, team_id, brand_id, mailbox_id or a custom field")
+	}
+	return nil
+}
+
+// ValidateConditions checks conditions against the enums and the workspace. The changed op
+// is an automation's (ValidateAutomationConditions).
 func ValidateConditions(ctx context.Context, q db.Querier, wid uuid.UUID, cs []Condition) ([]Condition, error) {
+	return validateConditions(ctx, q, wid, cs, false)
+}
+
+// ValidateAutomationConditions is ValidateConditions for an automation, which may also use the
+// changed op (checked against the trigger by ValidateConditionTrigger).
+func ValidateAutomationConditions(ctx context.Context, q db.Querier, wid uuid.UUID, cs []Condition) ([]Condition, error) {
+	return validateConditions(ctx, q, wid, cs, true)
+}
+
+func validateConditions(ctx context.Context, q db.Querier, wid uuid.UUID, cs []Condition, allowChanged bool) ([]Condition, error) {
 	if len(cs) > MaxConditions {
 		return nil, httpx.Validation("an automation can have at most 20 conditions")
 	}
@@ -119,6 +186,28 @@ func ValidateConditions(ctx context.Context, q db.Querier, wid uuid.UUID, cs []C
 			continue
 		}
 		c.Question = ""
+		if c.Op == OpChanged {
+			change, ok := ConditionChange(c.Field)
+			if !allowChanged || !ok || change == "contact_id" {
+				return nil, httpx.Validation("changed conditions are an automation's, on subject, priority, severity, status, tag, sentiment, " +
+					"assignee_id, team_id, brand_id, mailbox_id or a ticket custom field")
+			}
+			if _, key, isField := ConditionFieldKey(c.Field); isField {
+				if defs[domain.FieldEntityTicket] == nil {
+					d, err := domain.LoadFieldDefs(ctx, q, wid, domain.FieldEntityTicket)
+					if err != nil {
+						return nil, err
+					}
+					defs[domain.FieldEntityTicket] = d
+				}
+				if _, ok := defs[domain.FieldEntityTicket][key]; !ok {
+					return nil, httpx.Validation(fmt.Sprintf("condition field %q is not a custom field of tickets", Truncate(c.Field, 60)))
+				}
+			}
+			c.Value = ""
+			out = append(out, c)
+			continue
+		}
 		if entity, key, ok := ConditionFieldKey(c.Field); ok {
 			if defs[entity] == nil {
 				d, err := domain.LoadFieldDefs(ctx, q, wid, entity)

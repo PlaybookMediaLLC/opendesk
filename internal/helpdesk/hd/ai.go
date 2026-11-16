@@ -16,6 +16,7 @@ import (
 	"github.com/riverqueue/river"
 
 	"github.com/useopendesk/opendesk/internal/config"
+	"github.com/useopendesk/opendesk/internal/db"
 	"github.com/useopendesk/opendesk/internal/domain"
 	"github.com/useopendesk/opendesk/internal/httpx"
 	"github.com/useopendesk/opendesk/internal/jobs"
@@ -284,15 +285,20 @@ type AIHooks struct {
 	// the ticket_created automations, outside their transaction, and applies its result
 	// in its own transaction. It is a no-op when the ticket was triaged already.
 	AutoTriage func(ctx context.Context, wid, tid uuid.UUID) error
-	// Triage runs the ai_triage automation action inside the trigger transaction and
-	// returns the ticket fields it changed. It returns (nil, nil) when it skips (AI off,
-	// no AI balance, provider unavailable); an error means tx failed.
-	Triage func(ctx context.Context, tx pgx.Tx, wid, tid uuid.UUID) ([]string, error)
+	// TriagePrepare runs the model for the ai_triage automation action, outside any
+	// transaction (q is the pool): no lock on the ticket is held while the model answers.
+	// It returns an opaque result for TriageApply, or (nil, nil) when it skips (AI off, no
+	// AI balance, provider unavailable); an error is a database failure.
+	TriagePrepare func(ctx context.Context, q db.Querier, wid, tid uuid.UUID) (any, error)
+	// TriageApply writes a TriagePrepare result in the trigger transaction, against the
+	// ticket as it is then, and returns the ticket fields it changed. It may be called
+	// again with the same result when the transaction is retried.
+	TriageApply func(ctx context.Context, tx pgx.Tx, wid, tid uuid.UUID, result any) ([]string, error)
 	// Decide answers ai_decide conditions: the probability of yes for each question, in
-	// one decision call inside the trigger transaction. A question it could not answer
-	// (no decision engine, AI off, no AI balance, provider failure) is absent from the map;
-	// an error means tx failed.
-	Decide func(ctx context.Context, tx pgx.Tx, wid, tid uuid.UUID, questions []string) (map[string]float64, error)
+	// one decision call outside any transaction (q is the pool). A question it could not
+	// answer (no decision engine, AI off, no AI balance, provider failure) is absent from
+	// the map; an error is a database failure.
+	Decide func(ctx context.Context, q db.Querier, wid, tid uuid.UUID, questions []string) (map[string]float64, error)
 	// Engine is the decision engine of one workspace: Engine(cfg), or Jev on the
 	// workspace's own TypeSafe or OpenRouter key (contracts/ai.md "Provider per
 	// workspace"). ok is false when it cannot tell.

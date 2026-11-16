@@ -68,3 +68,27 @@ func TestMatchPhraseLists(t *testing.T) {
 		t.Error("tag none on a ticket without labels")
 	}
 }
+
+// changed holds on ticket_updated for a field the update changed, on nothing else.
+func TestMatchChanged(t *testing.T) {
+	f := facts{status: "open", onUpdate: true, changes: []string{"status", "fields", "tags"}}
+	cases := []struct {
+		c    hd.Condition
+		want bool
+	}{
+		{hd.Condition{Field: "status", Op: hd.OpChanged}, true},
+		{hd.Condition{Field: "priority", Op: hd.OpChanged}, false},
+		{hd.Condition{Field: "tag", Op: hd.OpChanged}, true},
+		{hd.Condition{Field: "field.plan", Op: hd.OpChanged}, true},
+		{hd.Condition{Field: "body", Op: hd.OpChanged}, false},
+	}
+	for _, c := range cases {
+		if got := match(c.c, f); got != c.want {
+			t.Errorf("match(%+v) = %v, want %v", c.c, got, c.want)
+		}
+	}
+	f.onUpdate = false
+	if match(hd.Condition{Field: "status", Op: hd.OpChanged}, f) {
+		t.Error("changed held outside ticket_updated")
+	}
+}

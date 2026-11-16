@@ -155,7 +155,7 @@ func (b *automationWriteBody) apply(ctx context.Context, q db.Querier, wid uuid.
 	}
 	var err error
 	if b.Conditions != nil {
-		if a.Conditions, err = hd.ValidateConditions(ctx, q, wid, *b.Conditions); err != nil {
+		if a.Conditions, err = hd.ValidateAutomationConditions(ctx, q, wid, *b.Conditions); err != nil {
 			return err
 		}
 	}
@@ -173,6 +173,9 @@ func (b *automationWriteBody) apply(ctx context.Context, q db.Querier, wid uuid.
 	}
 	if a.Trigger != jobs.TriggerCallEnded && hd.UsesCallFields(a.Conditions) {
 		return httpx.Validation("call conditions need the call_ended trigger")
+	}
+	if err := hd.ValidateConditionTrigger(a.Trigger, a.Conditions); err != nil {
+		return err
 	}
 	if b.Enabled != nil {
 		a.Enabled = *b.Enabled

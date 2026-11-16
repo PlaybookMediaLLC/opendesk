@@ -98,8 +98,12 @@ func assignChat(ctx context.Context, tx pgx.Tx, d *deps.Deps, wid, tid uuid.UUID
 		}
 	}
 	next, err := PickAssignee(ctx, tx, wid, pool, rule.Mode, required)
-	if err != nil || next == nil {
+	if err != nil {
 		return nil, err
+	}
+	if next == nil {
+		// Nobody free now: the backlog job gives it to the next member who is.
+		return nil, setAssignPending(ctx, tx, wid, tid, true)
 	}
 	changes, err := applyPatch(ctx, tx, d, wid, tid, Actor{Type: "system", Meta: map[string]any{"via": "chat", "mode": rule.Mode}},
 		Patch{Assignee: Opt[uuid.UUID]{Set: true, Value: *next}}, applyOpts{Lenient: true})

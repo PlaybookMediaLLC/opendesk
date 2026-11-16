@@ -323,14 +323,23 @@ func TestAutomationLoopGuard(t *testing.T) {
 	b := addAutomation(t, e, ws, jobs.TriggerTicketUpdated, 1,
 		[]map[string]string{{"field": "status", "op": "equals", "value": "pending"}}, []map[string]string{{"type": "set_status", "value": "open"}})
 	tk := createTicket(t, e, ws, map[string]any{"kind": "note"})
-	e.Do("PATCH", "/v1/tickets/"+tk.ID.String(), ws.Agent.As(ws), map[string]any{"priority": "high"}).Want(t, 200)
 	runTriggers(t, e, ws.ID)
 	var runs []int64
+	// A change of a field their conditions leave alone runs neither.
+	e.Do("PATCH", "/v1/tickets/"+tk.ID.String(), ws.Agent.As(ws), map[string]any{"priority": "high"}).Want(t, 200)
+	runTriggers(t, e, ws.ID)
+	e.Scalar(`SELECT array_agg(run_count ORDER BY position) FROM automations WHERE id = ANY($1)`, &runs, []uuid.UUID{a, b})
+	if runs[0] != 0 || runs[1] != 0 {
+		t.Fatalf("run counts %v after a priority change", runs)
+	}
+	e.Do("PATCH", "/v1/tickets/"+tk.ID.String(), ws.Agent.As(ws), map[string]any{"status": "pending"}).Want(t, 200)
+	runTriggers(t, e, ws.ID)
 	e.Scalar(`SELECT array_agg(run_count ORDER BY position) FROM automations WHERE id = ANY($1)`, &runs, []uuid.UUID{a, b})
 	if runs[0] != 1 || runs[1] != 1 {
 		t.Fatalf("run counts %v: each automation fires once per chain", runs)
 	}
-	if got := getTicket(t, e, ws, tk.ID); got.Status != "open" {
+	// pending: b opens it, a sets it pending again, and b has fired in this chain.
+	if got := getTicket(t, e, ws, tk.ID); got.Status != "pending" {
 		t.Fatalf("status %s", got.Status)
 	}
 }
