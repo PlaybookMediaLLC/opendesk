@@ -70,11 +70,29 @@ check "risky plan needs approval" 1 "$(grep -c 'Needs approval' <<<"$summary")"
 check "no values in the reduced plan" 0 "$(grep -c s3cr3t <<<"$reduced" || true)"
 check "no values in the summary" 0 "$(grep -c s3cr3t <<<"$summary" || true)"
 
-# Only task definitions replaced, plus creates and updates: applied on its own.
-safe=$(jq '.resource_changes |= map(select(.type != "aws_lb" and .type != "aws_s3_bucket" and .type != "aws_ecs_service"))' <<<"$plan")
+# Only task definitions replaced, plus creates and updates of what grants no
+# access: applied on its own.
+safe=$(jq '.resource_changes |= map(select(.type != "aws_lb" and .type != "aws_s3_bucket" and .type != "aws_ecs_service" and .type != "aws_kms_alias"))' <<<"$plan")
 safe_reduced=$("$tfplan" reduce <<<"$safe")
 check "safe plan" safe "$("$tfplan" class <<<"$safe_reduced")"
 check "safe plan needs no approval" 0 "$("$tfplan" markdown <<<"$safe_reduced" | grep -c 'Needs approval' || true)"
+
+# A create or an update that changes access waits for a reviewer too.
+for change in "aws_iam_role_policy.deploy update" "aws_iam_user.ci create" "aws_iam_role_policy_attachment.admin create" \
+  "aws_vpc_security_group_ingress_rule.open create" "aws_security_group.tasks update" "aws_kms_key_policy.this update" \
+  "aws_s3_bucket_policy.state update" "aws_secretsmanager_secret_policy.this create" "aws_s3_bucket_public_access_block.state update" \
+  "aws_kms_alias.this create" "cloudflare_api_token.ci create"; do
+  addr=${change% *} action=${change#* }
+  one=$(jq --arg a "$addr" --arg t "${addr%%.*}" --arg x "$action" \
+    '.resource_changes = [.resource_changes[0] | .address = $a | .type = $t | .change.actions = [$x]] | .output_changes = {}' <<<"$plan")
+  check "$action $addr is risky" risky "$("$tfplan" reduce <<<"$one" | "$tfplan" class)"
+done
+check "access change needs approval" 1 "$(jq '.resource_changes = [.resource_changes[0] | .address = "aws_iam_role_policy.x" | .type = "aws_iam_role_policy" | .change.actions = ["update"]]' <<<"$plan" |
+  "$tfplan" reduce | "$tfplan" markdown | grep -c 'Needs approval')"
+
+# Moving an address (a refactor) or importing changes nothing, whatever the type.
+moved=$(jq '.resource_changes = [{"address": "aws_iam_role.new", "previous_address": "aws_iam_role.old", "mode": "managed", "type": "aws_iam_role", "change": {"actions": ["no-op"]}}] | .output_changes = {}' <<<"$plan")
+check "moved IAM role" safe "$("$tfplan" reduce <<<"$moved" | "$tfplan" class)"
 
 # A deleted task definition is routine too.
 td_delete=$(jq '.resource_changes = [.resource_changes[0] | .change.actions = ["delete"]] | .output_changes = {}' <<<"$plan")

@@ -685,7 +685,9 @@ module "github_oidc" {
   ])
 
   # The Terraform roles deploy.yml and ci.yml assume (deploy/terraform/README.md, "Applying changes").
-  terraform_state_bucket = var.terraform_state_bucket != "" ? var.terraform_state_bucket : "${var.name}-terraform-state-${local.account}"
-  secret_prefix          = "${var.name}/${local.env}"
-  kms_key_arn            = aws_kms_key.this.arn
+  terraform_state_bucket      = var.terraform_state_bucket != "" ? var.terraform_state_bucket : "${var.name}-terraform-state-${local.account}"
+  terraform_state_kms_key_arn = var.terraform_state_kms_key_arn
+  secret_prefix               = "${var.name}/${local.env}"
+  terraform_secret_arns       = module.secrets.managed_value_arns
+  kms_key_arn                 = aws_kms_key.this.arn
 }

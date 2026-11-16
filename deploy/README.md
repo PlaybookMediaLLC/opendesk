@@ -654,7 +654,7 @@ command with `admin revoke <email>` removes one, and `admin list` lists them.
 - **deploy.yml** (release tags `v*` without a pre-release suffix, on a commit
   on `main`; a push to `main` deploys only the site and the docs): Terraform
   (plan, then apply; a plan that deletes or
-  replaces anything but a task definition waits for approval), images, migrate,
+  replaces anything but a task definition, or changes access, waits for approval), images, migrate,
   services, Pages (with the runtime
   config and, when `APPLE_APP_IDS` is set, the apple-app-site-association),
   email worker, help worker (with its routes).
@@ -685,7 +685,8 @@ setup):
   run's summary lists addresses and actions) and applies it before the
   migrations and the service roll. Only code on `main` gets credentials.
   A plan that deletes, replaces or forgets anything other than a task
-  definition waits for a reviewer in Actions (environment
+  definition, or that creates or changes access (IAM, KMS, security groups,
+  resource policies), waits for a reviewer in Actions (environment
   `infrastructure-approval`).
 - Settings (`terraform.tfvars`) live in the state bucket, not in git:
   `scripts/tfvars.sh pull`, edit, `scripts/tfvars.sh push`, then run Deploy from

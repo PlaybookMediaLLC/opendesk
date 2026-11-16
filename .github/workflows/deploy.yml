@@ -3,8 +3,9 @@ name: Deploy
 # A release tag (v1.2.3, not a pre-release like v1.2.3-rc.1) -> production:
 #   1. plan Terraform (deploy/terraform/environments/production) and apply it, so
 #      new settings, env vars and secrets exist before the code that needs them.
-#      A plan that deletes, replaces or forgets anything but a task definition
-#      waits for a reviewer (environment infrastructure-approval); any other plan
+#      A plan that deletes, replaces or forgets anything but a task definition,
+#      or changes access (IAM, KMS, security groups, policies), waits for a
+#      reviewer (environment infrastructure-approval); any other plan
 #      applies on its own (environment infrastructure). Logs and summaries carry
 #      addresses and actions only (scripts/tfplan.sh).
 #   2. build linux/arm64 images, push to ECR tagged with the commit SHA
@@ -180,7 +181,8 @@ jobs:
           expected-digest: ${{ needs.infrastructure-plan.outputs.digest }}
 
   # The same apply, for a plan that deletes, replaces or forgets something other
-  # than a task definition: it starts once a reviewer approves the deployment.
+  # than a task definition, or changes access (scripts/tfplan.sh): it starts once
+  # a reviewer approves the deployment.
   infrastructure-approval:
     name: Apply infrastructure (approved)
     needs: infrastructure-plan
