@@ -105,7 +105,11 @@ actor AppAttestClient {
 enum PKCE {
     static func verifier() -> String {
         var bytes = [UInt8](repeating: 0, count: 48)
-        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        if SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) != errSecSuccess {
+            // Never an all-zero verifier: the system generator is cryptographically secure too.
+            var generator = SystemRandomNumberGenerator()
+            bytes = bytes.map { _ in UInt8.random(in: .min ... .max, using: &generator) }
+        }
         return base64URL(Data(bytes))
     }
 

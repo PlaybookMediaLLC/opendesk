@@ -4,6 +4,9 @@
 #
 #   - golang-migrate refuses a directory where two files share a version, and
 #     the binary then fails at boot. Gaps between versions are fine.
+#   - CREATE/DROP INDEX CONCURRENTLY cannot run inside a transaction, and a file
+#     of several statements runs as one, so such a file holds that statement
+#     alone.
 #   - golang-migrate applies only versions above the database's current one. A
 #     migration numbered at or below a version that main (the cloud) or a
 #     release (self-hosters) already has is never applied to those databases.
@@ -54,6 +57,15 @@ for path in "${ups[@]}"; do
 done
 for path in "$DIR"/*.down.sql; do
   [[ -f ${path%.down.sql}.up.sql ]] || fail "missing $(basename "${path%.down.sql}").up.sql"
+done
+
+# A concurrent index build runs only as the file's one statement.
+for path in "${sql[@]}"; do
+  body=$(sed 's/--.*$//' "$path")
+  grep -qi 'concurrently' <<<"$body" || continue
+  statements=$(tr -cd ';' <<<"$body" | wc -c | tr -d ' ')
+  [[ $statements -le 1 ]] ||
+    fail "$(basename "$path") builds an index CONCURRENTLY beside other statements; give it a migration of its own"
 done
 
 # Order against refs. The path inside the repository, for git ls-tree.

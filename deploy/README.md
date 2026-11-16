@@ -551,6 +551,44 @@ branches to be up to date" (the migration duplicate check depends on it). A tag
 ruleset on `v*` (Settings > Rules) restricts creating, moving and deleting
 release tags to maintainers, since a release tag deploys production.
 
+#### Release signing
+
+A signed release is what every self-host with auto-update installs, so the
+keys that sign live in a GitHub environment named `release`, never as
+repository secrets:
+
+1. Settings > Environments > New environment `release`. Add **required
+   reviewers** (maintainers other than the one who tags, where possible),
+   tick "Prevent self-review", and under "Deployment branches and tags"
+   allow only tags `v*` and `desktop-v*`.
+2. Move these secrets from the repository into that environment, then delete
+   the repository copies: `RELEASE_SIGNING_KEY` (release.yml signs
+   `SHA256SUMS`), `CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_ID`,
+   `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`, `APPLE_API_KEY`,
+   `APPLE_API_KEY_ID`, `APPLE_API_ISSUER` (macOS signing, notarization and the
+   iPhone upload), `WIN_CSC_LINK`, `WIN_CSC_KEY_PASSWORD` and the `AZURE_*`
+   Trusted Signing secrets (Windows). Move the variable `IOS_TEAM_ID` too.
+
+Release, Desktop and iOS refuse a tag whose commit is not on `main`, and the
+jobs that sign wait in the `release` environment until a reviewer approves
+them. A desktop or iPhone build without a release tag gets no environment and
+is unsigned.
+
+The release key's fingerprint is published with every release (its notes) and
+here, so an installer fetched from opendesk.sh can be checked against a second
+source:
+
+```sh
+openssl pkey -pubin -in deploy/install/release-signing.pub -outform DER | sha256sum
+# 10cbd016889b434cb9b98842872c11280e4e7d381543ba83ac7ffee12a2f7e8a
+```
+
+`scripts/check-installer.sh` checks that this value, the key embedded in
+`install.sh` and `opendesk-ctl`, and `release-signing.pub` agree.
+
+The `CLOUDFLARE_API_TOKEN` in `production` can publish opendesk.sh, which
+serves `install.sh`: keep it to the scopes in step 2 and nothing more.
+
 ### 12. First deploy
 
 Run the Deploy workflow from a release tag (Actions > Deploy > Run workflow,
@@ -616,14 +654,16 @@ command with `admin revoke <email>` removes one, and `admin list` lists them.
 - **deploy.yml** (release tags `v*` without a pre-release suffix, on a commit
   on `main`; a push to `main` deploys only the site and the docs): Terraform
   (plan, then apply; a plan that deletes or
-  replaces anything but a task definition waits for approval), images, migrate,
+  replaces anything but a task definition, or changes access, waits for approval), images, migrate,
   services, Pages (with the runtime
   config and, when `APPLE_APP_IDS` is set, the apple-app-site-association),
   email worker, help worker (with its routes).
   Migrations run before any service moves, so a migration must work with both
   the old and the new code (add, backfill, then remove in a later deploy).
-- **release.yml** (tags `v*`): GHCR images with SBOM and provenance,
-  attestations, the GitHub release, and the site refresh.
+- **release.yml** (tags `v*` on a commit on `main`): GHCR images with SBOM
+  and provenance, attestations, and the GitHub release, whose `SHA256SUMS` is
+  signed in the `release` environment after a reviewer approves
+  ([Release signing](#release-signing)).
 - **security.yml** (weekly): govulncheck, pnpm audit, mix deps.audit and
   sobelow, Trivy on the published images.
 
@@ -645,7 +685,8 @@ setup):
   run's summary lists addresses and actions) and applies it before the
   migrations and the service roll. Only code on `main` gets credentials.
   A plan that deletes, replaces or forgets anything other than a task
-  definition waits for a reviewer in Actions (environment
+  definition, or that creates or changes access (IAM, KMS, security groups,
+  resource policies), waits for a reviewer in Actions (environment
   `infrastructure-approval`).
 - Settings (`terraform.tfvars`) live in the state bucket, not in git:
   `scripts/tfvars.sh pull`, edit, `scripts/tfvars.sh push`, then run Deploy from
@@ -700,8 +741,11 @@ less install.sh && sh install.sh
 ```
 
 After installing, sign up at your domain: the first account owns the
-workspace. Then set `SIGNUP_ENABLED=false` in `.env` if the instance is
-private, and `docker compose up -d`.
+workspace. Sign-up is closed after that (`SIGNUP_ENABLED=false`): others join
+by invitation. Set `SIGNUP_ENABLED=true` in `.env` and `docker compose up -d`
+only if anyone on the internet should be able to create a workspace, and then
+consider `MAILBOX_SYSTEM_SEND=false`, so workspaces send through their own mail
+servers rather than yours.
 
 What runs:
 
@@ -736,7 +780,8 @@ cd /opt/opendesk
 
 **Automatic updates** are on after the installer (`--no-auto-update` skips them):
 a systemd timer, or a cron entry, runs `opendesk-ctl auto-update run` each night
-around 04:00. It upgrades to the newest release of the same major version the
+around 04:00, as the user who owns the install directory (root only when root
+owns it; that user needs Docker without sudo, the `docker` group). It upgrades to the newest release of the same major version the
 way `upgrade` does, keeps its backups in `backups/auto/` (the newest three), and
 never retries a release that failed here. The admin panel's Health page shows
 the newest release and each run, and super admins get an email for a new major
@@ -744,12 +789,13 @@ version or a failed run (`UPDATE_CHECK=false` stops the server looking).
 
 The same, by hand:
 
-**Back up.** Three things, all needed for a restore:
+**Back up.** These, all needed for a restore:
 
 ```sh
 cd /opt/opendesk
 docker compose exec -T postgres pg_dump -U opendesk -d opendesk -Fc > db.dump
 docker cp "$(docker compose ps -q opendesk)":/data - | gzip > data.tar.gz   # attachments, NATS store
+docker cp "$(docker compose ps -q s3)":/data - | gzip > s3-data.tar.gz      # only with the bundled S3 store (minio profile)
 cp .env env                                                                 # CREDENTIALS_KEY lives here
 ```
 
@@ -767,8 +813,13 @@ cp <backup>/env .env                          # if this is a new machine
 docker compose up -d postgres --wait
 docker compose stop opendesk realtime caddy
 docker compose exec -T postgres pg_restore -U opendesk -d opendesk --clean --if-exists --no-owner --single-transaction < <backup>/db.dump
-gunzip -c <backup>/data.tar.gz | docker run --rm -i --volumes-from "$(docker compose ps -aq opendesk)" alpine:3.22 \
-  sh -c 'find /data -mindepth 1 -delete && tar -xf - -C / && chown -R 65532:65532 /data'
+helper=$(docker inspect --format '{{.Image}}' "$(docker compose ps -aq postgres)")   # has a shell and tar
+gunzip -c <backup>/data.tar.gz | docker run --rm -i --entrypoint /bin/sh --volumes-from "$(docker compose ps -aq opendesk)" "$helper" \
+  -c 'find /data -mindepth 1 -delete && tar -xf - -C / && chown -R 65532:65532 /data'
+# only with the bundled S3 store:
+docker compose stop s3
+gunzip -c <backup>/s3-data.tar.gz | docker run --rm -i --entrypoint /bin/sh --volumes-from "$(docker compose ps -aq s3)" "$helper" \
+  -c 'find /data -mindepth 1 -delete && tar -xf - -C /'
 docker compose up -d
 ```
 
@@ -789,6 +840,18 @@ docker compose pull && docker compose up -d
 Releases do not skip migrations, so upgrading across several versions at once
 is fine. Downgrading is not supported once a newer version's migrations ran;
 restore the backup taken before the upgrade instead.
+
+**Resource limits.** The Compose file sets none, since one box size does not fit
+every install. On a small machine, or with Ollama, cap what can grow so it cannot
+starve Postgres, in a `compose.override.yml` next to `docker-compose.yml` (Compose
+reads it on its own; the installer never touches it):
+
+```yaml
+services:
+  opendesk: { mem_limit: 1g }
+  realtime: { mem_limit: 512m }
+  ollama: { mem_limit: 6g }   # only with the ollama profile
+```
 
 **Logs.** `docker compose logs -f --tail=200 opendesk`. Container logs rotate
 at 10 MB, five files per service. Request logs never contain query strings,
@@ -854,7 +917,8 @@ available to every workspace, and Google and Microsoft mailboxes can read the
 inbox directly through their APIs with the Collab clients; turn `COLLAB_IMAP`
 off too to receive by forwarding only.
 
-**Sending through opendesk.** On by default (`MAILBOX_SYSTEM_SEND=true`): a
+**Sending through opendesk.** On by default (`MAILBOX_SYSTEM_SEND=true`), for a
+workspace one of whose owners or admins has confirmed their email address: a
 mailbox without its own way to send can send replies through the platform email
 (`MAIL_DRIVER`), from `MAIL_FROM` with the mailbox's name. `MAILBOX_SYSTEM_SEND=false`
 makes every mailbox send through Google, Microsoft or SMTP, as opendesk Cloud

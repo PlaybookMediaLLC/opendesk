@@ -83,6 +83,11 @@ Self-hosted = `opendesk` + `realtime` + `postgres` behind Caddy on one domain: `
   below the highest on main or in the last release, in CI and before a release. The first
   build used per-area ranges: core `0001xx`, email `0002xx`, helpdesk `0003xx`, billing
   `0004xx`, ai `0005xx`; those are closed.
+- An index on a table that grows with customers' data (tickets, messages, contacts, events,
+  attachments, collab mail) is built without blocking writes: a migration file of its own
+  holding only `CREATE INDEX CONCURRENTLY IF NOT EXISTS ...` (one statement runs outside a
+  transaction), with `DROP INDEX CONCURRENTLY IF EXISTS ...` as its down.
+  `scripts/check-migrations.sh` refuses a concurrent build beside other statements.
 - Run `gofmt -w` on touched files, then `go build ./... && go vet ./...`.
 
 ## Cloud and self-hosted
@@ -100,8 +105,8 @@ instance option (`MAILBOX_SYSTEM_SEND`), off on the cloud.
 ## Deploying
 
 Merging to `main` deploys opendesk.sh on its own (`.github/workflows/deploy.yml`): Terraform plans and
-applies (a new task definition revision applies by itself; deleting or replacing anything else waits for
-a reviewer), the images build, migrations run, api, worker and gateway roll, and the Pages projects
+applies (a new task definition revision applies by itself; deleting or replacing anything else, and any
+change to IAM, KMS, security groups or policies, waits for a reviewer), the images build, migrations run, api, worker and gateway roll, and the Pages projects
 deploy. Production settings (`terraform.tfvars`, such as `ai_model`) are not in git: CI plans with the
 copy in the state bucket. Change them with `scripts/tfvars.sh pull`, edit, `scripts/tfvars.sh push`;
 an apply from a local copy alone is undone by the next deploy (`deploy/terraform/README.md`).
@@ -209,6 +214,10 @@ Errors, logging, data
 - Releases sign `SHA256SUMS` with the release key (`deploy/install/release-signing.pub`,
   secret `RELEASE_SIGNING_KEY`); the installer and `opendesk-ctl` verify it and pin image
   digests. Desktop apps install updates themselves only where the code signature is checked.
+- Only a tag on a commit on `main` is released, signed or deployed. The release key and the
+  Apple and Windows code-signing secrets are secrets of the `release` GitHub environment
+  (required reviewers, release tags only), never repository secrets; every job that signs
+  names that environment (`deploy/README.md`, "Release signing").
 
 ## Web conventions (`web/`, `site/`, `docs/`)
 

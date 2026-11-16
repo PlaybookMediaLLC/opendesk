@@ -64,10 +64,36 @@ below).
      --versioning-configuration Status=Enabled
    aws s3api put-public-access-block --bucket opendesk-terraform-state-$ACCOUNT \
      --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+   # A key of the state's own (see "State" below): its policy decides who can read it.
+   STATE_KEY=$(aws kms create-key --description "opendesk Terraform state" --query KeyMetadata.Arn --output text)
+   aws kms enable-key-rotation --key-id "$STATE_KEY"
    aws s3api put-bucket-encryption --bucket opendesk-terraform-state-$ACCOUNT \
-     --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"aws:kms"},"BucketKeyEnabled":true}]}'
+     --server-side-encryption-configuration "{\"Rules\":[{\"ApplyServerSideEncryptionByDefault\":{\"SSEAlgorithm\":\"aws:kms\",\"KMSMasterKeyID\":\"$STATE_KEY\"},\"BucketKeyEnabled\":true}]}"
    aws s3api put-bucket-policy --bucket opendesk-terraform-state-$ACCOUNT --policy "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"TLSOnly\",\"Effect\":\"Deny\",\"Principal\":\"*\",\"Action\":\"s3:*\",\"Resource\":[\"arn:aws:s3:::opendesk-terraform-state-$ACCOUNT\",\"arn:aws:s3:::opendesk-terraform-state-$ACCOUNT/*\"],\"Condition\":{\"Bool\":{\"aws:SecureTransport\":\"false\"}}}]}"
    ```
+
+   **State.** The state holds every generated secret (`AUTH_SECRET`,
+   `CREDENTIALS_KEY`, the gateway and inbound secrets) and the database role
+   passwords in the database URLs, so whoever reads it reads those. Keep it to
+   the two Terraform roles and the operators' admin role:
+
+   - Encrypt it with a KMS key of its own (above) and set
+     `terraform_state_kms_key_arn` in the settings to its ARN, so the plan role
+     may decrypt it through S3 only. Give the key a policy that allows
+     `kms:Decrypt` and `kms:GenerateDataKey` to the Terraform roles and your
+     admin role alone, not to the whole account.
+   - Add to the bucket policy a `Deny` of `s3:GetObject` and `s3:PutObject` on
+     `opendesk/*` for every principal whose `aws:PrincipalArn` is not one of
+     those roles (`ArnNotLike`). Add it after the first apply, once the roles
+     exist, and keep the admin role in it, or nobody can read the state.
+   - Turn on S3 server access logging or CloudTrail data events for the bucket
+     if you want each read recorded.
+   - `init` with `-backend-config="kms_key_id=$STATE_KEY"` so state writes name
+     the key too.
+
+   Replacing a generated secret with a write-only one (`secret_string_wo`, an
+   `ephemeral` resource) would keep it out of the state, but regenerates it:
+   never for `CREDENTIALS_KEY` without the rotation in "Day two".
 
 2. **Deploy the workers once** (`pnpm exec wrangler deploy` in
    `deploy/cloudflare/email-worker` and in `deploy/cloudflare/help-worker`).
@@ -149,9 +175,12 @@ Production is applied by the Deploy workflow, from a release tag of a commit on
   before the migrations and the service roll, so new env vars and secrets exist
   before the code that reads them.
 - **Approval.** A plan that deletes, replaces or forgets anything other than an
-  `aws_ecs_task_definition` (a new revision on every env change is routine)
-  waits in Actions for a reviewer of the `infrastructure-approval` environment;
-  every other plan applies on its own. The applying job plans again with the
+  `aws_ecs_task_definition` (a new revision on every env change is routine),
+  or that creates or updates anything that decides access (IAM, KMS, security
+  groups and network ACLs, resource policies, S3 public access and encryption
+  settings, CloudTrail, Cloudflare tokens and access rules; the list is
+  `privileged` in `scripts/tfplan.sh`), waits in Actions for a reviewer of the
+  `infrastructure-approval` environment; every other plan applies on its own. The applying job plans again with the
   state lock and applies only a plan with the same addresses and actions as the
   one summarized, and of the class its gate is for.
 - **Settings** (`terraform.tfvars`) are not in git. They live in the state
@@ -172,10 +201,13 @@ is discarded and only its errors are printed. No plan file is uploaded.
 The roles (module `github-oidc`):
 
 - `opendesk-github-terraform-plan`, for `infrastructure-plan`: AWS read-only,
-  the state and settings objects, and the project's secret values (a refresh
-  reads the versions Terraform generated), through Secrets Manager only. It
-  writes nothing, so its plans run with `-lock=false`, and it reads no object
-  outside the state bucket and no log line.
+  the state and settings objects, and the values of the secrets Terraform
+  itself writes (the generated ones and the database URLs, which a refresh
+  reads back and the state holds anyway), through Secrets Manager only. It is
+  denied every other secret value, so the keys operators store with
+  `scripts/put-secret.sh` (Stripe, AI providers, OAuth clients) are out of its
+  reach. It writes nothing, so its plans run with `-lock=false`, and it reads no
+  object outside the state bucket and no log line.
 - `opendesk-github-terraform-apply`, for `infrastructure` and
   `infrastructure-approval`, which deploy only from `main` and release tags:
   administrator, for one hour.
@@ -255,6 +287,15 @@ go through Deploy.
   off: they record the full request line, query string included, where one-time
   values ride (OAuth codes, signed file links). Set `cloudtrail = false` only when an
   organization trail already covers the account.
+- **The database's public path stays closed by hand.** Terraform cannot see the
+  PlanetScale IP restrictions set in "Bootstrap order", so nothing reports if
+  they are loosened. Check them after any change of PlanetScale admins and with
+  each quarterly access review: the database must allow only private addresses,
+  and `psql "$DATABASE_URL"` from outside the VPC must fail to connect.
+- **Task egress is open** (no NAT gateway, public IPs on the tasks; "Why there
+  is no NAT Gateway" in `deploy/README.md`). Outbound requests to addresses
+  people choose (webhooks, mailbox servers, MCP tools) are checked by the
+  application (`internal/netsafe`), which is the boundary to keep.
 - **Help centers** are on with `help_domain` (default `opendeskhelp.com`): the
   api and worker get `HELP_DOMAIN`, `HELP_CNAME_TARGET` (`custom.<help_domain>`)
   and `HELP_PROXY_SECRET`. `help_domain = ""` leaves help centers at

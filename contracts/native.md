@@ -47,6 +47,12 @@ shows `receiving: "imap_off"` (contracts/api.md "Email"). The self-hosted binary
 on Pages it is written only when `MAILBOX_IMAP` is set, and when it is absent a client follows
 `mailbox_imap` from `GET /v1/mailboxes/connect-options`.
 
+`apiUrl` and `gatewayUrl` are taken as given. App Transport Security still refuses cleartext
+in release builds, except to local-network addresses (`NSAllowsLocalNetworking`), so a
+self-host on a private address over plain `http://`/`ws://` works and its tokens then cross
+that network unencrypted: put such an instance behind HTTPS (Caddy's local CA, or a real
+certificate) before using it beyond a trusted LAN.
+
 It is the JSON twin of `/config.js` (same keys, same values): the self-hosted binary serves
 both (`internal/webui`), and on Cloudflare Pages `write-config.mjs` writes both. Cloud's app
 origin is `https://app.opendesk.sh`. Then `GET {apiUrl}/v1/auth/config` tells the client
@@ -96,6 +102,11 @@ in the response body and keeps it in the Keychain.
   earlier session (`/v1/auth/logout`); signing out of one account ends only its session. A
   version that held one account (its token under the server alone) moves it to its own item
   on the first launch after the update, so nobody is signed out by it.
+- **Reinstall starts signed out.** iOS keeps Keychain items after the app is deleted. The first
+  launch of a fresh install (no install marker and no settings in `UserDefaults`, which go with
+  the app) removes the items a deleted install left, so a reinstall, or a device handed to
+  someone else, signs nobody back in. An update from a version before the marker keeps them.
+  A refresh token the Keychain refuses to store stays in memory until the app quits.
 
 ### App Attest (iPhone stand-in for Turnstile)
 

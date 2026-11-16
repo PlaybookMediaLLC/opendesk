@@ -14,8 +14,12 @@
 #
 # A plan is risky when it deletes, replaces or forgets anything other than an
 # aws_ecs_task_definition (a new revision on every environment change is
-# routine). deploy.yml applies a safe plan on its own and a risky one only after
-# a reviewer approves it in the infrastructure-approval environment.
+# routine), or when it changes, in any way, who or what may reach something:
+# IAM, KMS, security groups and network ACLs, resource policies, S3 public
+# access and encryption settings, CloudTrail, and Cloudflare tokens and access
+# rules (privileged, below). deploy.yml applies a safe plan on its own and a
+# risky one only after a reviewer approves it in the infrastructure-approval
+# environment.
 #
 # scripts/check-tfplan.sh tests this on a sample plan.
 set -euo pipefail
@@ -26,6 +30,15 @@ usage() {
 }
 
 [ $# -eq 1 ] || usage
+
+# The jq definitions class and markdown share: what makes a change risky.
+risk='
+  def privileged:
+    (.type | test("^(aws_iam_|aws_kms_|aws_security_group|aws_vpc_security_group_|aws_network_acl|aws_default_security_group|aws_default_network_acl|aws_cloudtrail|aws_s3_bucket_public_access_block|aws_s3_account_public_access_block|aws_s3_bucket_acl|aws_s3_bucket_ownership_controls|aws_s3_bucket_server_side_encryption_configuration|aws_lambda_permission|aws_organizations_|aws_ssoadmin_|cloudflare_api_token|cloudflare_account_member|cloudflare_access_|cloudflare_zero_trust_)"))
+    or (.type | test("_policy$|_policy_attachment$|_policy_document$"));
+  def destructive: (.action == "delete" or .action == "replace" or .action == "forget") and .type != "aws_ecs_task_definition";
+  def risky: destructive or (privileged and .action != "move" and .action != "import");
+'
 
 case "$1" in
   reduce)
@@ -51,8 +64,8 @@ case "$1" in
       }'
     ;;
   class)
-    jq -r '
-      if ([.changes[] | select((.action == "delete" or .action == "replace" or .action == "forget") and .type != "aws_ecs_task_definition")] | length) > 0 then "risky"
+    jq -r "$risk"'
+      if ([.changes[] | select(risky)] | length) > 0 then "risky"
       elif (.changes | length) > 0 or .outputs > 0 then "safe"
       else "none" end'
     ;;
@@ -61,9 +74,8 @@ case "$1" in
     jq -S -c '{changes: [.changes[] | {address, action}] | sort_by(.address), outputs}' | sum | cut -d' ' -f1
     ;;
   markdown)
-    jq -r '
+    jq -r "$risk"'
       def order: {"delete": 0, "replace": 1, "forget": 2, "create": 3, "update": 4, "import": 5, "move": 6}[.action];
-      def risky: (.action == "delete" or .action == "replace" or .action == "forget") and .type != "aws_ecs_task_definition";
       def count($a): [.changes[] | select(.action == $a)] | length;
       . as $p
       | 300 as $max
@@ -86,7 +98,7 @@ case "$1" in
            else empty end),
           (if $risky > 0 then
              "",
-             "**Needs approval.** It deletes, replaces or forgets something other than a task definition, so the apply on main waits for a reviewer in the `infrastructure-approval` environment."
+             "**Needs approval.** It deletes, replaces or forgets something other than a task definition, or changes access (IAM, KMS, security groups, policies), so the apply on main waits for a reviewer in the `infrastructure-approval` environment."
            else empty end)
         ]
       | .[]'

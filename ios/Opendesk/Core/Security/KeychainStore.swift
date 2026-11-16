@@ -7,10 +7,41 @@ import Security
 /// never synced or backed up to another device.
 enum KeychainStore {
     private static let service = "sh.opendesk.app"
+    private static let installMarker = "keychain.install"
 
-    static func set(_ value: String, for account: String) {
+    /// iOS keeps an app's Keychain items after the app is deleted, while its UserDefaults go
+    /// with it. A launch with no install marker in UserDefaults removes the items a deleted
+    /// install left behind, so a reinstall (or a device handed to someone else) never signs
+    /// anyone back in. An install that already has settings, from a version before the
+    /// marker, keeps its items. Call it before anything reads the Keychain.
+    static func forgetPreviousInstall() {
         #if DEBUG
-        if DemoMode.isOn { return DemoMode.setKeychainValue(value, for: account) }
+        if DemoMode.isOn { return }
+        #endif
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: installMarker) else { return }
+        let hadSettings = Bundle.main.bundleIdentifier
+            .flatMap { defaults.persistentDomain(forName: $0) }
+            .map { !$0.isEmpty } ?? false
+        if !hadSettings {
+            let all: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+            ]
+            SecItemDelete(all as CFDictionary)
+        }
+        defaults.set(true, forKey: installMarker)
+    }
+
+    /// Stores `value`; false when the Keychain refused it (the caller's session then lasts
+    /// only until the app quits).
+    @discardableResult
+    static func set(_ value: String, for account: String) -> Bool {
+        #if DEBUG
+        if DemoMode.isOn {
+            DemoMode.setKeychainValue(value, for: account)
+            return true
+        }
         #endif
         let data = Data(value.utf8)
         let query = baseQuery(account)
@@ -18,13 +49,14 @@ enum KeychainStore {
             kSecValueData as String: data,
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
         ]
-        let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        var status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
         if status == errSecItemNotFound {
             var insert = query
             insert[kSecValueData as String] = data
             insert[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-            SecItemAdd(insert as CFDictionary, nil)
+            status = SecItemAdd(insert as CFDictionary, nil)
         }
+        return status == errSecSuccess
     }
 
     static func get(_ account: String) -> String? {

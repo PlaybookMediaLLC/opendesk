@@ -206,11 +206,20 @@ resource "aws_iam_role_policy_attachment" "terraform_plan" {
 }
 
 data "aws_iam_policy_document" "terraform_plan" {
-  # A refresh reads the secret versions Terraform generated.
+  # A refresh reads back the secret versions Terraform writes (generated secrets and
+  # the database URLs), whose values the state holds anyway. Nothing else: the values
+  # operators put with scripts/put-secret.sh are never Terraform's to read.
   statement {
     sid       = "SecretValues"
     actions   = ["secretsmanager:GetSecretValue"]
-    resources = ["arn:aws:secretsmanager:${local.region}:${local.account}:secret:${var.secret_prefix}/*"]
+    resources = var.terraform_secret_arns
+  }
+
+  statement {
+    sid           = "NoOtherSecretValues"
+    effect        = "Deny"
+    actions       = ["secretsmanager:GetSecretValue", "secretsmanager:BatchGetSecretValue"]
+    not_resources = var.terraform_secret_arns
   }
 
   # Only through Secrets Manager: the same key encrypts attachments and logs.
@@ -235,6 +244,22 @@ data "aws_iam_policy_document" "terraform_plan" {
     sid       = "StateRead"
     actions   = ["s3:GetObject"]
     resources = [for k in var.terraform_state_keys : "${local.state}/${k}"]
+  }
+
+  # The state holds the generated secrets: a state bucket encrypted with a KMS key of
+  # its own (deploy/terraform/README.md, "State") is read through S3 only.
+  dynamic "statement" {
+    for_each = var.terraform_state_kms_key_arn == "" ? [] : [var.terraform_state_kms_key_arn]
+    content {
+      sid       = "StateKey"
+      actions   = ["kms:Decrypt"]
+      resources = [statement.value]
+      condition {
+        test     = "StringEquals"
+        variable = "kms:ViaService"
+        values   = ["s3.${local.region}.amazonaws.com"]
+      }
+    }
   }
 
   # Plans need configuration, not data: no object outside the state bucket and

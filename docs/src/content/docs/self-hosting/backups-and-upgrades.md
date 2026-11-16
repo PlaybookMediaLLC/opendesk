@@ -9,6 +9,7 @@ description: Back up and restore a self-hosted opendesk, move between releases, 
 | --- | --- |
 | The Postgres database | Everything except files. |
 | The data volume (`/data`) | Attachments and raw email with the `local` storage driver. |
+| The bundled S3 store (`s3-data` volume) | Attachments and raw email when the installer's bundled S3-compatible store is in use (`COMPOSE_PROFILES=minio`). |
 | `.env` | Secrets. **`CREDENTIALS_KEY` cannot be recovered**, and without it stored mailbox credentials cannot be decrypted. After [replacing the key](/self-hosting/hardening/#replace-credentials_key), keep the old one with the backups taken before. |
 
 ## Back up
@@ -21,17 +22,20 @@ This writes `backups/<UTC time>/` (or under `dir`) containing:
 
 - `db.dump`: a `pg_dump` in custom format
 - `data.tar.gz`: the opendesk data volume
+- `s3-data.tar.gz`: the bundled S3 store, when it is in use (`COMPOSE_PROFILES=minio`)
 - `env`: a copy of `.env`
 - `VERSION`: the running release
 - `SHA256SUMS`: a checksum of each file, which `restore` checks before it changes anything
 
-The directory is created with mode `0700`. The backup is taken while opendesk keeps running: `pg_dump` reads one consistent snapshot of the database, and files written during the copy may be missing from `data.tar.gz`. An [upgrade](#upgrade) stops the app first, so its backup holds every write. Schedule it with cron:
+The directory and its parent are created with mode `0700`. The backup is taken while opendesk keeps running: `pg_dump` reads one consistent snapshot of the database, and files written during the copy may be missing from `data.tar.gz` and `s3-data.tar.gz`. An [upgrade](#upgrade) stops the app first, so its backup holds every write. Schedule it with cron:
 
 ```sh
 0 3 * * * /opt/opendesk/opendesk-ctl backup >> /var/log/opendesk-backup.log 2>&1
 ```
 
-If you use an external database or S3 storage, back those up with your provider's tools as well.
+If you use an external database or an S3 bucket of your own, back those up with your provider's tools as well; `backup` says so when attachments are in a bucket it does not hold.
+
+Backups taken by hand are never deleted for you (only `backups/auto/` keeps just its newest three), and `backup` prints how many there are and their size. Delete the ones you no longer need, or keep them off the machine as below.
 
 ## Off-site copies
 
@@ -66,7 +70,7 @@ The server can write new encrypted copies but cannot read old ones. Keep the pri
 
 Restore a backup on a separate, disposable machine every few months, so you know the copies work and how long a restore takes. The restored copy holds production's mailbox credentials and would fetch mail and send queued replies, so cut it off from the internet before it starts:
 
-1. Install opendesk on the spare machine with the [installer](/self-hosting/install-script/), with no DNS pointed at it, and run `docker pull alpine:3.22` (the restore unpacks files with it).
+1. Install opendesk on the spare machine with the [installer](/self-hosting/install-script/), with no DNS pointed at it. Pick the same attachment storage as production (the bundled S3 store or the volume).
 2. Block outgoing connections from the machine, for example with a firewall that allows only your SSH session.
 3. Copy an encrypted backup there, check its checksum, then decrypt and unpack it with the private key:
 
@@ -86,7 +90,7 @@ Restore a backup on a separate, disposable machine every few months, so you know
 /opt/opendesk/opendesk-ctl restore /path/to/backups/20261011T030000Z
 ```
 
-It checks the files against `SHA256SUMS`, stops the app, replaces the database and the data volume, and asks you to type `restore` first (`OPENDESK_YES=1` skips the prompt). A file that does not match its checksum stops the restore before anything changes. Keep the same `CREDENTIALS_KEY` and `AUTH_SECRET` as the backup. If you have replaced `CREDENTIALS_KEY` since, you can instead keep the current one and add the backup's to `CREDENTIALS_KEY_PREVIOUS`; see [Backups and older keys](/self-hosting/hardening/#backups-and-older-keys), which also covers restoring a backup from before a leak.
+It checks the files against `SHA256SUMS`, stops the app, replaces the database, the data volume and, when the backup holds one, the bundled S3 store, and asks you to type `restore` first (`OPENDESK_YES=1` skips the prompt). It stops before anything changes when a file does not match its checksum, when the backup was taken on a newer release than the one installed (upgrade to that release first), or when the backup holds the bundled S3 store and this install does not run it (put the backup's storage settings in `.env` first). The files are unpacked with the Postgres image already on the machine, so a restore pulls nothing. Keep the same `CREDENTIALS_KEY` and `AUTH_SECRET` as the backup. If you have replaced `CREDENTIALS_KEY` since, you can instead keep the current one and add the backup's to `CREDENTIALS_KEY_PREVIOUS`; see [Backups and older keys](/self-hosting/hardening/#backups-and-older-keys), which also covers restoring a backup from before a leak.
 
 ## Upgrade
 
@@ -125,7 +129,7 @@ A run never installs:
 /opt/opendesk/opendesk-ctl auto-update run      # run now, as the timer does
 ```
 
-`on` and `off` set `AUTO_UPDATE` in `.env` and add or remove the schedule (the systemd timer needs root, so they use `sudo`). The timer logs to the journal (`journalctl -u opendesk-update`); a cron entry to `auto-update.log` in the install directory. The app is down for the backup and the new version's first start, usually under a minute. Mail forwarded to opendesk and webhooks from mail providers are retried by their senders.
+`on` and `off` set `AUTO_UPDATE` in `.env` and add or remove the schedule (installing the systemd timer needs root, so they use `sudo`). The run itself is never root unless root owns the install: the timer, or the cron entry, runs as the user who owns the install directory, so that user must reach Docker without `sudo` (the `docker` group). When they cannot, `on` says so and installs no schedule. The timer logs to the journal (`journalctl -u opendesk-update`); a cron entry to `auto-update.log` in the install directory. The app is down for the backup and the new version's first start, usually under a minute. Mail forwarded to opendesk and webhooks from mail providers are retried by their senders.
 
 Each run is reported to the instance: the admin panel's **Health** page shows whether automatic updates are on and how the last run went, and the super admins get an email when one fails.
 

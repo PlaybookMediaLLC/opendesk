@@ -128,7 +128,7 @@ Replies to customers go out **through the customer's own mailbox**: SMTP, Gmail 
 
 Failed sends are retried, up to 8 attempts, and the message shows its delivery status in the ticket.
 
-The `system` outbound option sends replies through platform email instead, from `MAIL_FROM` with the mailbox's name. Use it only when a mailbox cannot send for itself. `MAILBOX_SYSTEM_SEND=false` turns it off, as on opendesk Cloud: mailboxes then send through SMTP (their mail server or a sending service), Google or Microsoft, and one already on `system` sends nothing until it connects one. See [Sending through opendesk](/self-hosting/configuration/#sending-through-opendesk).
+The `system` outbound option sends replies through platform email instead, from `MAIL_FROM` with the mailbox's name. Use it only when a mailbox cannot send for itself. A workspace sends this way only once one of its owners or admins has confirmed their email address (the link in the verification email, which **Users** in the admin panel can send again); until then those replies fail with that reason. `MAILBOX_SYSTEM_SEND=false` turns it off, as on opendesk Cloud: mailboxes then send through SMTP (their mail server or a sending service), Google or Microsoft, and one already on `system` sends nothing until it connects one. See [Sending through opendesk](/self-hosting/configuration/#sending-through-opendesk).
 
 ## Platform email
 

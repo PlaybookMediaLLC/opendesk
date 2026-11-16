@@ -48,6 +48,9 @@ jobs:
     # CI calls this workflow on pushes to main too: only a version tag's own push uploads.
     if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.version != ''
     runs-on: macos-latest
+    # The App Store Connect key is a secret of the `release` environment
+    # (required reviewers, release tags only), never a repository secret.
+    environment: release
     env:
       VERSION: ${{ inputs.version || github.ref_name }}
       UPLOAD: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.upload }}
@@ -59,6 +62,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
+      # A signed build is made only from code that reached main.
+      - name: Commit is on main
+        run: |
+          git merge-base --is-ancestor HEAD origin/main ||
+            { echo "::error::$GITHUB_REF is not on main; only commits on main are signed"; exit 1; }
       - name: Archive, validate, and upload
         shell: bash
         run: |

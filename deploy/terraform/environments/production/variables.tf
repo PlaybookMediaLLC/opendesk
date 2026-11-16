@@ -119,6 +119,12 @@ variable "terraform_state_bucket" {
   default     = ""
 }
 
+variable "terraform_state_kms_key_arn" {
+  description = "The KMS key the state bucket is encrypted with, when it has one of its own (deploy/terraform/README.md, \"State\"). Empty for SSE-S3."
+  type        = string
+  default     = ""
+}
+
 variable "image_tag" {
   description = "Tag for the initial task definitions. deploy.yml registers later revisions."
   type        = string

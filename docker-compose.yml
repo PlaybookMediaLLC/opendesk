@@ -72,7 +72,7 @@ services:
       SITE_URL: ${OPENDESK_URL:-https://localhost}
       # Caddy is the only way in, and it replaces X-Forwarded-For with the peer.
       TRUST_PROXY: "true"
-      SIGNUP_ENABLED: ${SIGNUP_ENABLED:-true}
+      SIGNUP_ENABLED: ${SIGNUP_ENABLED:-false}
       # Look for new releases and tell the instance admins (docs: self-hosting/backups-and-upgrades).
       UPDATE_CHECK: ${UPDATE_CHECK:-true}
       # debug, info, warn or error (docs: self-hosting/configuration).

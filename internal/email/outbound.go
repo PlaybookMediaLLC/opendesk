@@ -363,6 +363,9 @@ func (s *service) deliver(ctx context.Context, m *mailboxRow, out *outMessage, e
 		if !s.systemSend {
 			return "", permanent(domain.ErrCannotSend.Detail)
 		}
+		if err := s.checkSystemSender(ctx, m.WorkspaceID); err != nil {
+			return "", err
+		}
 		raw, err := buildMIME(out, false)
 		if err != nil {
 			return "", err
@@ -374,6 +377,27 @@ func (s *service) deliver(ctx context.Context, m *mailboxRow, out *outMessage, e
 		return out.MessageID, nil
 	}
 	return "", permanent("The mailbox has no way to send email.")
+}
+
+// errSystemSenderUnverified refuses a send through the platform mailer from a workspace
+// whose owners and admins have not confirmed an email address yet.
+var errSystemSenderUnverified = permanent("Confirm the email address of the workspace's owner or an admin before this mailbox " +
+	"sends through the platform mailer, or connect Google or Microsoft, or add SMTP, in its settings.")
+
+// checkSystemSender lets a workspace send through the platform mailer (MAIL_FROM, the
+// instance's own sender) only once one of its owners or admins has confirmed their email
+// address, so the instance lends its sender only to a workspace someone answers for.
+func (s *service) checkSystemSender(ctx context.Context, wid uuid.UUID) error {
+	var confirmed bool
+	err := s.d.DB.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM members mb JOIN users u ON u.id = mb.user_id
+		WHERE mb.workspace_id = $1 AND mb.role IN ('owner', 'admin') AND u.email_verified_at IS NOT NULL AND u.suspended_at IS NULL)`, wid).Scan(&confirmed)
+	if err != nil {
+		return err
+	}
+	if !confirmed {
+		return errSystemSenderUnverified
+	}
+	return nil
 }
 
 // deliverable drops reserved .invalid addresses, which no mail server accepts.

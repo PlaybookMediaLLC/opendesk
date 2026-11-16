@@ -79,9 +79,9 @@ The installer writes `/opt/opendesk/.env` with fresh secrets. It holds the only 
 
 </Callout>
 
-<Callout title="Close sign-ups">
+<Callout title="Sign-ups">
 
-Once your account exists, set `SIGNUP_ENABLED=false` in `.env` so only people you invite can create an account.
+Sign-up is closed by default (`SIGNUP_ENABLED=false`): your account, the instance's first, registers, and after that only people you invite can. Set `SIGNUP_ENABLED=true` in `.env` only if anyone on the internet should be able to create a workspace.
 
 </Callout>
 

@@ -10,7 +10,7 @@ opendesk ships with secure defaults. This checklist covers what is up to you as 
 - `OPENDESK_ENV=production`. This turns on the boot checks for secrets.
 - `AUTH_SECRET` and `CREDENTIALS_KEY` are random, 32 bytes or more, and backed up somewhere private.
 - The site is served over HTTPS only. Caddy handles certificates and redirects.
-- `SIGNUP_ENABLED=false` once your team has accounts. People you invite can still join.
+- `SIGNUP_ENABLED=false` (the default): after the first account, only people you invite can join. With it `true`, set `MAILBOX_SYSTEM_SEND=false` too, so strangers' workspaces cannot send through your mail server.
 - Platform email (`MAIL_DRIVER`) is configured, so password resets work.
 - `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET` are set if the instance is on the public internet.
 
