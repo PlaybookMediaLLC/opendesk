@@ -287,6 +287,15 @@ go through Deploy.
   off: they record the full request line, query string included, where one-time
   values ride (OAuth codes, signed file links). Set `cloudtrail = false` only when an
   organization trail already covers the account.
+- **The database's public path stays closed by hand.** Terraform cannot see the
+  PlanetScale IP restrictions set in "Bootstrap order", so nothing reports if
+  they are loosened. Check them after any change of PlanetScale admins and with
+  each quarterly access review: the database must allow only private addresses,
+  and `psql "$DATABASE_URL"` from outside the VPC must fail to connect.
+- **Task egress is open** (no NAT gateway, public IPs on the tasks; "Why there
+  is no NAT Gateway" in `deploy/README.md`). Outbound requests to addresses
+  people choose (webhooks, mailbox servers, MCP tools) are checked by the
+  application (`internal/netsafe`), which is the boundary to keep.
 - **Help centers** are on with `help_domain` (default `opendeskhelp.com`): the
   api and worker get `HELP_DOMAIN`, `HELP_CNAME_TARGET` (`custom.<help_domain>`)
   and `HELP_PROXY_SECRET`. `help_domain = ""` leaves help centers at

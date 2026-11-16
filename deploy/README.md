@@ -841,6 +841,18 @@ Releases do not skip migrations, so upgrading across several versions at once
 is fine. Downgrading is not supported once a newer version's migrations ran;
 restore the backup taken before the upgrade instead.
 
+**Resource limits.** The Compose file sets none, since one box size does not fit
+every install. On a small machine, or with Ollama, cap what can grow so it cannot
+starve Postgres, in a `compose.override.yml` next to `docker-compose.yml` (Compose
+reads it on its own; the installer never touches it):
+
+```yaml
+services:
+  opendesk: { mem_limit: 1g }
+  realtime: { mem_limit: 512m }
+  ollama: { mem_limit: 6g }   # only with the ollama profile
+```
+
 **Logs.** `docker compose logs -f --tail=200 opendesk`. Container logs rotate
 at 10 MB, five files per service. Request logs never contain query strings,
 tokens or bodies, and Caddy's access log drops the `token`, `code`, `state`,

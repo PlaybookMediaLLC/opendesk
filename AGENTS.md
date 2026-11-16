@@ -83,6 +83,11 @@ Self-hosted = `opendesk` + `realtime` + `postgres` behind Caddy on one domain: `
   below the highest on main or in the last release, in CI and before a release. The first
   build used per-area ranges: core `0001xx`, email `0002xx`, helpdesk `0003xx`, billing
   `0004xx`, ai `0005xx`; those are closed.
+- An index on a table that grows with customers' data (tickets, messages, contacts, events,
+  attachments, collab mail) is built without blocking writes: a migration file of its own
+  holding only `CREATE INDEX CONCURRENTLY IF NOT EXISTS ...` (one statement runs outside a
+  transaction), with `DROP INDEX CONCURRENTLY IF EXISTS ...` as its down.
+  `scripts/check-migrations.sh` refuses a concurrent build beside other statements.
 - Run `gofmt -w` on touched files, then `go build ./... && go vet ./...`.
 
 ## Cloud and self-hosted
