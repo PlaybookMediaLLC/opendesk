@@ -29,7 +29,8 @@ type ColumnResult struct {
 	Column
 	// Checked values were read. Current ones already open with the current key.
 	Checked, Current int
-	// Resealed values opened with a previous key and now carry the current one.
+	// Resealed values opened with a previous key (or, in a bound column, were not yet bound
+	// to their row) and now carry the current one.
 	Resealed int
 	// Changed values were written again between the read and the update, so the newer
 	// value stayed as it was; the next pass checks it.
@@ -109,7 +110,15 @@ func (p *Pass) column(ctx context.Context, c Column) (ColumnResult, error) {
 		}
 		for _, it := range batch {
 			cr.Checked++
-			next, err := p.Box.Reseal(it.sealed)
+			// A bound column's values are sealed again for their row, those sealed before
+			// it was bound included.
+			var next []byte
+			var err error
+			if c.Bound() {
+				next, err = p.Box.ResealFor(c.AAD(it.id), it.sealed)
+			} else {
+				next, err = p.Box.Reseal(it.sealed)
+			}
 			switch {
 			case err != nil:
 				cr.Unreadable++

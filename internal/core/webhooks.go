@@ -135,7 +135,21 @@ func webhookHeaders(in map[string]string) (map[string]string, []string, error) {
 	return out, names, nil
 }
 
-func (s *svc) sealWebhookHeaders(headers map[string]string) ([]byte, error) {
+// webhookAAD binds a webhook's sealed secret_enc or headers_enc to its row: both columns
+// are bound in internal/sealed, so they are sealed with SealFor and read with OpenFor.
+func webhookAAD(column string, id uuid.UUID) []byte {
+	return crypto.RowAAD("webhooks", column, id.String())
+}
+
+func (s *svc) sealWebhookSecret(id uuid.UUID, secret string) ([]byte, error) {
+	return s.d.Box.SealFor(webhookAAD("secret_enc", id), []byte(secret))
+}
+
+func (s *svc) openWebhookSecret(id uuid.UUID, sealed []byte) ([]byte, error) {
+	return s.d.Box.OpenFor(webhookAAD("secret_enc", id), sealed)
+}
+
+func (s *svc) sealWebhookHeaders(id uuid.UUID, headers map[string]string) ([]byte, error) {
 	if len(headers) == 0 {
 		return nil, nil
 	}
@@ -143,14 +157,14 @@ func (s *svc) sealWebhookHeaders(headers map[string]string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return s.d.Box.Seal(b)
+	return s.d.Box.SealFor(webhookAAD("headers_enc", id), b)
 }
 
-func (s *svc) openWebhookHeaders(sealed []byte) (map[string]string, error) {
+func (s *svc) openWebhookHeaders(id uuid.UUID, sealed []byte) (map[string]string, error) {
 	if len(sealed) == 0 {
 		return map[string]string{}, nil
 	}
-	b, err := s.d.Box.Open(sealed)
+	b, err := s.d.Box.OpenFor(webhookAAD("headers_enc", id), sealed)
 	if err != nil {
 		return nil, err
 	}
@@ -314,13 +328,15 @@ func (s *svc) registerWebhooks(api huma.API) {
 			if err != nil {
 				return nil, err
 			}
-			sealedHeaders, err := s.sealWebhookHeaders(headers)
+			// The sealed values are bound to the webhook's row, so its id comes first.
+			id := ids.New()
+			sealedHeaders, err := s.sealWebhookHeaders(id, headers)
 			if err != nil {
 				return nil, httpx.Wrap(err)
 			}
 			enabled := in.Body.Enabled == nil || *in.Body.Enabled
 			secret := "whsec_" + crypto.RandomToken(32)
-			sealed, err := s.d.Box.Seal([]byte(secret))
+			sealed, err := s.sealWebhookSecret(id, secret)
 			if err != nil {
 				return nil, httpx.Wrap(err)
 			}
@@ -337,7 +353,6 @@ func (s *svc) registerWebhooks(api huma.API) {
 				if err != nil {
 					return err
 				}
-				id := ids.New()
 				if _, err := tx.Exec(ctx, `INSERT INTO webhooks (id, workspace_id, url, description, secret_enc, headers_enc, header_names, events, enabled, created_by, private_team_ids)
 					VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`, id, p.WorkspaceID, u, cleanDescription(in.Body.Description), sealed, sealedHeaders, headerNames, evs, enabled,
 					p.ActorUserID(), teams); err != nil {
@@ -420,7 +435,7 @@ func (s *svc) registerWebhooks(api huma.API) {
 				if err != nil {
 					return nil, err
 				}
-				sealedHeaders, err = s.sealWebhookHeaders(headers)
+				sealedHeaders, err = s.sealWebhookHeaders(id, headers)
 				if err != nil {
 					return nil, httpx.Wrap(err)
 				}
@@ -690,11 +705,11 @@ func (s *svc) challengeWebhook(ctx context.Context, wid, id uuid.UUID) (CoreWebh
 			wid, id, crypto.HashToken(code)); err != nil {
 			return CoreWebhook{}, err
 		}
-		secret, err := s.d.Box.Open(sealed)
+		secret, err := s.openWebhookSecret(id, sealed)
 		if err != nil {
 			return CoreWebhook{}, err
 		}
-		headers, err := s.openWebhookHeaders(sealedHeaders)
+		headers, err := s.openWebhookHeaders(id, sealedHeaders)
 		if err != nil {
 			return CoreWebhook{}, err
 		}
@@ -916,11 +931,11 @@ func (w *deliverWorker) Work(ctx context.Context, job *river.Job[jobs.WebhookDel
 		_, err := s.d.DB.Pool.Exec(ctx, `UPDATE webhook_deliveries SET status = 'failed', last_error = 'workspace suspended' WHERE id = $1`, job.Args.DeliveryID)
 		return err
 	}
-	secret, err := s.d.Box.Open(sealed)
+	secret, err := s.openWebhookSecret(hookID, sealed)
 	if err != nil {
 		return river.JobCancel(errors.New("webhook secret unreadable"))
 	}
-	headers, err := s.openWebhookHeaders(sealedHeaders)
+	headers, err := s.openWebhookHeaders(hookID, sealedHeaders)
 	if err != nil {
 		return river.JobCancel(errors.New("webhook headers unreadable"))
 	}

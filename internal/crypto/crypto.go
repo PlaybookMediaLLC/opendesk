@@ -2,6 +2,7 @@
 package crypto
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
@@ -98,6 +99,69 @@ func (b *Box) open(sealed []byte) ([]byte, bool, error) {
 		}
 	}
 	return nil, false, ErrUnknownKey
+}
+
+// boundPrefix starts a value sealed for one row (SealFor): a format version that a value
+// from Seal (nonce || ciphertext) starts with only by chance. Such a value fails the bound
+// reading's authentication and is then opened as one from Seal.
+var boundPrefix = []byte{0x00, 'o', 'd', 0x02}
+
+// RowAAD names where a sealed value lives (its table, column and row key), so SealFor binds
+// the value to that place: the same ciphertext copied to another row or column does not open.
+func RowAAD(table, column, key string) []byte {
+	return []byte(table + "\x00" + column + "\x00" + key)
+}
+
+// boundAAD is the associated data a bound value is sealed with: the format and the place.
+func boundAAD(aad []byte) []byte {
+	return append(append(make([]byte, 0, len(boundPrefix)+len(aad)), boundPrefix...), aad...)
+}
+
+// SealFor returns boundPrefix || nonce || ciphertext under the current key, with aad (RowAAD)
+// authenticated alongside: only OpenFor with the same aad opens it.
+func (b *Box) SealFor(aad, plaintext []byte) ([]byte, error) {
+	nonce := make([]byte, b.aead.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, err
+	}
+	out := append(append(make([]byte, 0, len(boundPrefix)+len(nonce)+len(plaintext)+b.aead.Overhead()), boundPrefix...), nonce...)
+	return b.aead.Seal(out, nonce, plaintext, boundAAD(aad)), nil
+}
+
+// OpenFor opens a value SealFor sealed with the same aad, under the current key or a
+// previous one. A value Seal sealed (before the column was bound to its rows) opens too,
+// until the key rotation seals it again for its row (ResealFor).
+func (b *Box) OpenFor(aad, sealed []byte) ([]byte, error) {
+	plain, _, _, err := b.openFor(aad, sealed)
+	return plain, err
+}
+
+// ResealFor returns sealed as SealFor(aad) under the current key, or nil when it already is
+// that. A value no key opens is ErrUnknownKey.
+func (b *Box) ResealFor(aad, sealed []byte) ([]byte, error) {
+	plain, current, bound, err := b.openFor(aad, sealed)
+	if err != nil || (current && bound) {
+		return nil, err
+	}
+	return b.SealFor(aad, plain)
+}
+
+// openFor reports whether the current key opened sealed and whether it was bound to aad.
+func (b *Box) openFor(aad, sealed []byte) (plain []byte, current, bound bool, err error) {
+	n := b.aead.NonceSize()
+	if rest, ok := bytes.CutPrefix(sealed, boundPrefix); ok && len(rest) >= n {
+		ad := boundAAD(aad)
+		if plain, err := b.aead.Open(nil, rest[:n], rest[n:], ad); err == nil {
+			return plain, true, true, nil
+		}
+		for _, p := range b.previous {
+			if plain, err := p.Open(nil, rest[:n], rest[n:], ad); err == nil {
+				return plain, false, true, nil
+			}
+		}
+	}
+	plain, current, err = b.open(sealed)
+	return plain, current, false, err
 }
 
 // SealJSON encrypts v as JSON.

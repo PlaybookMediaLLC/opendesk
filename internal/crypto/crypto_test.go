@@ -65,3 +65,67 @@ func TestBoxOpensWithPreviousKeys(t *testing.T) {
 		t.Fatal("a short previous key was accepted")
 	}
 }
+
+func TestSealForBindsTheValueToItsRow(t *testing.T) {
+	b, _ := NewBox(key('a'))
+	here := RowAAD("webhooks", "secret_enc", "0192f0c4-0000-7000-8000-000000000001")
+	there := RowAAD("webhooks", "secret_enc", "0192f0c4-0000-7000-8000-000000000002")
+	sealed, err := b.SealFor(here, []byte("whsec_x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := b.OpenFor(here, sealed); err != nil || string(got) != "whsec_x" {
+		t.Fatalf("open in its row: %q %v", got, err)
+	}
+	for name, aad := range map[string][]byte{
+		"another row":    there,
+		"another column": RowAAD("webhooks", "headers_enc", "0192f0c4-0000-7000-8000-000000000001"),
+		"no place":       nil,
+	} {
+		if _, err := b.OpenFor(aad, sealed); !errors.Is(err, ErrUnknownKey) {
+			t.Errorf("opened in %s: %v", name, err)
+		}
+	}
+	if _, err := b.Open(sealed); err == nil {
+		t.Error("a bound value opened without its place")
+	}
+	// A value sealed before its column was bound still opens, wherever it is read.
+	legacy, _ := b.Seal([]byte("old"))
+	if got, err := b.OpenFor(here, legacy); err != nil || string(got) != "old" {
+		t.Fatalf("legacy value: %q %v", got, err)
+	}
+}
+
+func TestResealForMovesValuesToTheBoundFormatAndCurrentKey(t *testing.T) {
+	old, _ := NewBox(key('a'))
+	aad := RowAAD("webhooks", "secret_enc", "row-1")
+	legacyOld, _ := old.Seal([]byte("one"))
+	boundOld, _ := old.SealFor(aad, []byte("two"))
+
+	b, _ := NewBox(key('b'), key('a'))
+	legacyCurrent, _ := b.Seal([]byte("three"))
+	boundCurrent, _ := b.SealFor(aad, []byte("four"))
+
+	if next, err := b.ResealFor(aad, boundCurrent); err != nil || next != nil {
+		t.Fatalf("a bound value under the current key is left alone: %v %v", next, err)
+	}
+	for want, sealed := range map[string][]byte{"one": legacyOld, "two": boundOld, "three": legacyCurrent} {
+		next, err := b.ResealFor(aad, sealed)
+		if err != nil || next == nil {
+			t.Fatalf("%s: %v %v", want, next, err)
+		}
+		if !bytes.HasPrefix(next, boundPrefix) {
+			t.Fatalf("%s not resealed in the bound format", want)
+		}
+		only, _ := NewBox(key('b'))
+		if got, err := only.OpenFor(aad, next); err != nil || string(got) != want {
+			t.Fatalf("%s after reseal: %q %v", want, got, err)
+		}
+		if _, err := only.OpenFor(RowAAD("webhooks", "secret_enc", "row-2"), next); err == nil {
+			t.Fatalf("%s opened in another row after reseal", want)
+		}
+	}
+	if _, err := b.ResealFor(aad, []byte("short")); err == nil {
+		t.Fatal("garbage resealed")
+	}
+}

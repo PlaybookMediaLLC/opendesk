@@ -201,7 +201,10 @@ Errors, logging, data
   and `CREDENTIALS_KEY` are required.
 - Mailbox credentials, OAuth tokens, webhook secrets, TOTP secrets: AES-GCM via `d.Box`. Every
   column that stores `d.Box` output is in `internal/sealed.Columns`, so a replaced
-  `CREDENTIALS_KEY` (`CREDENTIALS_KEY_PREVIOUS`) re-encrypts it.
+  `CREDENTIALS_KEY` (`CREDENTIALS_KEY_PREVIOUS`) re-encrypts it. A column bound to its rows
+  (`sealed.bound`; webhook secrets and headers) is written with `d.Box.SealFor` and read with
+  `d.Box.OpenFor`, with `crypto.RowAAD(table, column, row key)`, so a value opens only in its own
+  row; the key rotation seals its older values again that way. Bind a new column the same way.
 - Security events are audit-logged: login, failed login, 2FA changes, password change,
   member and role changes, API key and webhook changes, mailbox and integration connect/disconnect.
 - Users can delete their account and owners their workspace (data removed, not hidden).
