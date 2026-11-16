@@ -15,7 +15,8 @@ import (
 // mentions and links to wiki pages keep only their text; comment anchors, dates and tones
 // their words. The workspace's own files and images, databases, ticket lists and subpage
 // links are left out, and so are synced blocks and buttons that do more than open a link;
-// leftOut counts them so the app can say so. Links to tickets and contacts keep their text.
+// leftOut counts them so the app can say so. Links to contacts keep their text, links to
+// tickets their number alone.
 // Footnotes become [1] in the text and a paragraph each at the end; a toggle heading a heading.
 func Article(body string) (out string, leftOut int) {
 	root := parse(body)
@@ -83,7 +84,9 @@ func (a article) rewrite(n *html.Node) int {
 	switch kind(n) {
 	case "mention":
 		replace(n, textNode(strings.TrimPrefix(text(n), "@")))
-	case "page", "date", "ticket", "contact":
+	case "ticket":
+		replace(n, textNode(ticketLabel(n)))
+	case "page", "date", "contact":
 		replace(n, textNode(text(n)))
 	case "inline-math":
 		replace(n, element("code", atom.Code, textNode(attr(n, "data-latex"))))

@@ -80,10 +80,12 @@ show them. Create one with `POST /v1/wiki/pages` `{kind: "database", database?}`
 tags in a table); a row with `{parent_id: <database>, title, props}`. `PATCH` takes `database` (replaced
 whole, a database only) and `props` (merged; `null` takes a value away; a row only); neither moves the
 version or adds a revision, and `wiki_page.updated` carries `database` or `props`. A row's values move
-its last edit. `GET /v1/wiki/databases/{id}/rows` answers `{data: DbRow[], templates: WikiNode[]}`:
-every row in the tree, in order, with `props`, `cover`, `excerpt` (how its text starts), who made and
-last edited it; and the database's own templates (pages made with `{parent_id: <database>, template:
-true}`), which a new row can start as a copy of. Wrong shapes are `422 invalid_database`.
+its last edit. `GET /v1/wiki/databases/{id}/rows` answers `{data: DbRow[], next_cursor: string | null,
+templates: WikiNode[]}`: the rows in the tree, in order, a page at a time (`limit` 1..500, default 200; pass
+`next_cursor` as `cursor` for the next page; the app follows it to the last), with `props`, `cover`, `excerpt`
+(how its text starts, read from the start of its body; a ticket mention reads as its number), who made and last
+edited it; and the database's own templates (pages made with `{parent_id: <database>, template: true}`), which a
+new row can start as a copy of. Wrong shapes are `422 invalid_database`.
 
 ```ts
 interface Database {
@@ -796,16 +798,21 @@ access shows them (contracts/teams.md "Visibility"): a mention grants nothing.
 
 ### Mentions
 
-`<a data-type="ticket" data-id="<ticket id>" href="/tickets/<number>">#<number> <subject></a>` and
+`<a data-type="ticket" data-id="<ticket id>" href="/tickets/<number>">#<number></a>` and
 `<a data-type="contact" data-id="<contact id>" href="/contacts/<contact id>">name</a>`. `hd.SanitizeWiki`
 keeps exactly that on them: `data-type`, a uuid `data-id` and the app's own route of that kind as `href`
 (a ticket's number, a contact's id); another `href` or any other attribute is dropped, and a link
-without an id is a plain link. The text is what the writer saw when they mentioned it. The app draws
+without an id is a plain link. A ticket mention's text is its number alone, whatever was sent (the
+number of its `href`, else the `#<number>` its text starts with, else `#`): a subject, which may be a
+private team's, is never stored, so no read of the page (its body, revisions, a row's excerpt, search,
+exports, an article made from it) can show it to someone who may not see the ticket. A contact
+mention's text is what the writer saw when they mentioned it. The app draws
 a ticket live for a reader who may see it (status, `#number`, subject; a card with status, assignee
 and last update on hover; a click opens it) and as "a ticket you can't see" for anyone else, without
 its subject; a contact with its initial and name, opening the contact. The editor offers tickets from
 "@" and "#" (a number, or text to search) and contacts from "@", through the app's search. An article
-made from the page ("Publishing") and its Markdown keep only the text.
+made from the page ("Publishing") and its Markdown keep only the text: a ticket's number, a contact's
+name. Migration `000772` brought bodies, revisions and canvas cards saved before to the number alone.
 
 ### Ticket list
 

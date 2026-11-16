@@ -1936,6 +1936,8 @@ export type DbRow = WikiNode & {
 };
 
 export type DbRows = { data: DbRow[]; templates: WikiNode[] };
+/** One page of GET /v1/wiki/databases/{id}/rows; endpoints' rows() follows next_cursor. */
+export type DbRowsPage = DbRows & { next_cursor: string | null };
 
 /** Where a top-level page lives. */
 export type WikiSpace = "workspace" | "private" | "team";

@@ -760,7 +760,17 @@ export const api = {
     recent: (area: T.WikiArea = "wiki") => http.get<T.Page<T.WikiNode>>("/v1/wiki/recent", { query: { area } }),
     views: (id: string) => http.get<T.WikiPageViews>(`/v1/wiki/pages/${id}/views`),
     analytics: (id: string, days = 28) => http.get<T.WikiPageAnalytics>(`/v1/wiki/pages/${id}/analytics`, { query: { days } }),
-    rows: (id: string) => http.get<T.DbRows>(`/v1/wiki/databases/${id}/rows`),
+    /** Every row of a database: the API answers a page at a time, followed here to the end. */
+    rows: async (id: string): Promise<T.DbRows> => {
+      const first = await http.get<T.DbRowsPage>(`/v1/wiki/databases/${id}/rows`, { query: { limit: 500 } });
+      const data = [...first.data];
+      for (let cursor = first.next_cursor; cursor; ) {
+        const next = await http.get<T.DbRowsPage>(`/v1/wiki/databases/${id}/rows`, { query: { limit: 500, cursor } });
+        data.push(...next.data);
+        cursor = next.next_cursor;
+      }
+      return { data, templates: first.templates };
+    },
     dailyNotes: (from: string, to: string, area: T.WikiArea = "wiki") => http.get<T.Page<T.WikiDailyNote>>("/v1/wiki/daily", { query: { from, to, area } }),
     openDaily: (b: { date: string; title: string; journal_title: string; body_html?: string; area?: T.WikiArea }) => http.post<T.WikiPage>("/v1/wiki/daily", b),
     remove: (id: string) => http.del(`/v1/wiki/pages/${id}`),

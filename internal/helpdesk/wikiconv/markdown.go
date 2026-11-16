@@ -364,6 +364,8 @@ func (m mdWriter) inline(n *html.Node) string {
 			return s
 		}
 		return m.inlines(n)
+	case "ticket":
+		return escape(ticketLabel(n))
 	case "a":
 		href := attr(n, "href")
 		inner := strings.TrimSpace(m.inlines(n))

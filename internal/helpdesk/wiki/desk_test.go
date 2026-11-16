@@ -2,7 +2,9 @@ package wiki_test
 
 import (
 	"fmt"
+	"net/url"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -144,4 +146,99 @@ func TestTicketWikiPages(t *testing.T) {
 	if left != 0 {
 		t.Fatalf("links of a deleted page %d", left)
 	}
+}
+
+// A ticket mention is stored as its number alone: a private team's ticket subject the
+// writer saw never reaches the page's body, its revisions, a database row's excerpt, search
+// or an export, for anyone.
+func TestTicketMentionKeepsNumberOnly(t *testing.T) {
+	e := hdtest.New(t, wiki.Register)
+	ws := e.NewWorkspace()
+	agent, viewer := ws.Agent.As(ws), ws.Viewer.As(ws)
+	team := uuid.New()
+	e.Exec(`INSERT INTO teams (id, workspace_id, name, private) VALUES ($1, $2, 'HR', true)`, team, ws.ID)
+	tk := addTicket(e, ws, 812, &team)
+	mention := fmt.Sprintf(`<a data-type="ticket" data-id="%s" href="/tickets/812">#812 Termination of Doe</a>`, tk)
+
+	pg := create(t, e, agent, map[string]any{"title": "Notes", "body_html": "<p>Re " + mention + " follow up</p>"})
+	if strings.Contains(pg.BodyHTML, "Termination") || !strings.Contains(pg.BodyHTML, ">#812</a>") {
+		t.Fatalf("stored body %s", pg.BodyHTML)
+	}
+	r := e.Do("GET", "/v1/wiki/pages/"+pg.ID, viewer, nil).Want(t, 200)
+	if strings.Contains(string(r.Body), "Termination") {
+		t.Fatalf("page read %s", r.Body)
+	}
+	e.Do("PATCH", "/v1/wiki/pages/"+pg.ID, agent, map[string]any{"body_html": "<p>Again " + mention + "</p>"}).Want(t, 200)
+	r = e.Do("GET", "/v1/wiki/pages/"+pg.ID+"/revisions", viewer, nil).Want(t, 200)
+	if strings.Contains(string(r.Body), "Termination") {
+		t.Fatalf("revisions %s", r.Body)
+	}
+	var hits struct{ Data []struct{ ID string } }
+	e.Do("GET", "/v1/wiki/search?q=Termination", viewer, nil).Want(t, 200).JSON(t, &hits)
+	if len(hits.Data) != 0 {
+		t.Fatalf("search found the subject: %+v", hits.Data)
+	}
+	r = e.Do("GET", "/v1/wiki/pages/"+pg.ID+"/export?format=markdown", viewer, nil).Want(t, 200)
+	if strings.Contains(string(r.Body), "Termination") || !strings.Contains(string(r.Body), "#812") {
+		t.Fatalf("export %s", r.Body)
+	}
+
+	var db struct{ ID string }
+	e.Do("POST", "/v1/wiki/pages", agent, map[string]any{"title": "Cases", "kind": "database"}).Want(t, 201).JSON(t, &db)
+	e.Do("POST", "/v1/wiki/pages", agent, map[string]any{"title": "Case", "parent_id": db.ID, "body_html": "<p>" + mention + " is open.</p>"}).Want(t, 201)
+	// A row saved before mentions were stored by number still reads without the subject.
+	legacy := create(t, e, agent, map[string]any{"title": "Old case", "parent_id": db.ID})
+	e.Exec(`UPDATE wiki_pages SET body_html = $2 WHERE id = $1`, legacy.ID, `<p><a data-type="ticket" data-id="`+tk.String()+`" href="/tickets/812" rel="nofollow noreferrer">#812 Termination of Doe</a> old</p>`)
+	var rows dbRows
+	e.Do("GET", "/v1/wiki/databases/"+db.ID+"/rows", viewer, nil).Want(t, 200).JSON(t, &rows)
+	if len(rows.Data) != 2 {
+		t.Fatalf("rows %+v", rows.Data)
+	}
+	for _, row := range rows.Data {
+		if strings.Contains(row.Excerpt, "Termination") || !strings.HasPrefix(row.Excerpt, "#812") {
+			t.Fatalf("excerpt %q", row.Excerpt)
+		}
+	}
+}
+
+// A database's rows come a page at a time, in their order, and the pages together are every row.
+func TestDatabaseRowsPages(t *testing.T) {
+	e := hdtest.New(t, wiki.Register)
+	ws := e.NewWorkspace()
+	agent := ws.Agent.As(ws)
+	var db struct{ ID string }
+	e.Do("POST", "/v1/wiki/pages", agent, map[string]any{"title": "Tasks", "kind": "database"}).Want(t, 201).JSON(t, &db)
+	var want []string
+	for i := 0; i < 5; i++ {
+		var row struct{ ID string }
+		e.Do("POST", "/v1/wiki/pages", agent, map[string]any{"title": fmt.Sprintf("Task %d", i), "parent_id": db.ID}).Want(t, 201).JSON(t, &row)
+		want = append(want, row.ID)
+	}
+	var got []string
+	path := "/v1/wiki/databases/" + db.ID + "/rows?limit=2"
+	for pages := 0; ; pages++ {
+		if pages > 5 {
+			t.Fatal("rows never ended")
+		}
+		var out struct {
+			Data       []struct{ ID string } `json:"data"`
+			NextCursor *string               `json:"next_cursor"`
+		}
+		e.Do("GET", path, agent, nil).Want(t, 200).JSON(t, &out)
+		if len(out.Data) > 2 {
+			t.Fatalf("page %+v", out)
+		}
+		for _, r := range out.Data {
+			got = append(got, r.ID)
+		}
+		if out.NextCursor == nil {
+			break
+		}
+		path = "/v1/wiki/databases/" + db.ID + "/rows?limit=2&cursor=" + url.QueryEscape(*out.NextCursor)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("rows %v, want %v", got, want)
+	}
+	e.Do("GET", "/v1/wiki/databases/"+db.ID+"/rows?limit=501", agent, nil).Want(t, 422)
+	e.Do("GET", "/v1/wiki/databases/"+db.ID+"/rows?cursor=broken", agent, nil).Want(t, 400)
 }
