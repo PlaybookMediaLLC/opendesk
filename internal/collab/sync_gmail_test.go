@@ -81,6 +81,7 @@ type fakeGmail struct {
 	minimalGets    int
 	expireBefore   int // history baseline older than this is expired
 	modify         []map[string]any
+	modifyStatus   int // label changes (batchModify) answer this when set
 	trashed        []string
 	sent           []string // multipart bodies
 	gets           int
@@ -354,6 +355,9 @@ func (g *fakeGmail) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		reply(map[string]any{"id": thread, "messages": msgs})
+	case r.Method == "POST" && path == "/messages/batchModify" && g.modifyStatus != 0:
+		w.WriteHeader(g.modifyStatus)
+		_, _ = w.Write([]byte(`{"error":{"code":` + strconv.Itoa(g.modifyStatus) + `,"message":"Invalid label","errors":[{"reason":"invalidArgument"}]}}`))
 	case r.Method == "POST" && path == "/messages/batchModify":
 		var in map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&in)
