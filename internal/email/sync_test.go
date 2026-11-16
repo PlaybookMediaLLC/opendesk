@@ -197,13 +197,15 @@ func TestIMAPSyncStartNew(t *testing.T) {
 		t.Fatalf("after new mail: %d messages, want 1", n)
 	}
 	// A changed UIDVALIDITY on a mailbox that already syncs reads the window again: mail
-	// may have arrived since the last pass.
+	// may have arrived since the last pass. A mailbox that starts with new mail only reads
+	// back no further than shortly before it was created, so "recent one" (an hour before)
+	// stays out and "recent two" comes in.
 	mustExec(t, w.d, `UPDATE mailboxes SET imap_uid_validity = 12345 WHERE id = $1`, m.ID)
 	if err := w.s.syncMailbox(w.ctx, m.ID); err != nil {
 		t.Fatal(err)
 	}
-	if n := inboundCount(); n != 3 {
-		t.Fatalf("validity reset: %d messages, want 3", n)
+	if n := inboundCount(); n != 2 {
+		t.Fatalf("validity reset: %d messages, want 2", n)
 	}
 }
 
