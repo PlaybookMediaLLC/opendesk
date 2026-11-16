@@ -49,10 +49,17 @@ view to its owner.
 
 ## Transport
 
-1. `events.Relay` (worker role) reads unpublished rows in seq order, publishes each to
-   NATS subject **`od.events.<workspace_id>`** (JSON envelope as payload), sets
-   `published_at`, and enqueues webhook deliveries.
-2. The Elixir gateway subscribes to `od.events.>` and pushes to Phoenix channels.
+1. `events.Relay` (worker role) publishes each unpublished row to NATS subject
+   **`od.events.<workspace_id>`** (JSON envelope as payload), sets `published_at`, and enqueues
+   webhook dispatch, all in one transaction (at least once: a failure before commit publishes the
+   row again). A workspace's events are published in `seq` order: `Publish` allocates `seq` under
+   the workspace row's lock, so they commit in that order, and each relay flush claims whole
+   workspaces with a transaction-scoped advisory lock (`pg_try_advisory_xact_lock`), so with
+   several worker processes one relay at a time publishes a given workspace, oldest `seq` first.
+   `occurred_at` is the database clock read once `seq` is allocated.
+2. The Elixir gateway subscribes to `od.events.>` and pushes to Phoenix channels. It drops only an
+   exact repeat of an envelope it already broadcast (same event `id`, remembered for ten minutes);
+   it never drops a distinct event because of its `seq`.
 3. Live previews (the widget agent's streamed reply) go straight to NATS on **`od.live.<workspace_id>`**,
    outside the outbox: no `seq`, not stored, not replayed, not sent to webhooks (`contracts/realtime.md`).
 4. Control messages on **`od.control.disconnect`**: `{"user_id": "...", "session_id": "..."?, "at": <ms>}`

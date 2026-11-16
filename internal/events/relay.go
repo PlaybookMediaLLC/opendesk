@@ -16,13 +16,29 @@ import (
 )
 
 // Relay moves committed events from the outbox to NATS and queues webhook and channel dispatch.
-// Several relays can run at once; rows are claimed with SKIP LOCKED.
+//
+// A workspace's events are published in seq order. Several relays can run at once (one per
+// worker process): each flush claims workspaces with a transaction-scoped advisory lock, so
+// one relay at a time publishes a given workspace's pending events, oldest seq first. A
+// workspace's events commit in seq order (Publish allocates seq under the workspace row's
+// lock), so the pending rows a relay sees always start at the next seq to publish.
 type Relay struct {
 	Pool *pgxpool.Pool // direct (unpooled) connection: LISTEN needs a session
 	NATS *nats.Conn
 	Jobs *river.Client[pgx.Tx]
 	Log  *slog.Logger
 }
+
+const (
+	// relayLockClass is the first key of the advisory locks that claim a workspace's
+	// pending events for one relay; the second is hashtext(workspace id).
+	relayLockClass = 0x6f645245
+	// relayWorkspaces is how many workspaces one flush claims at most.
+	relayWorkspaces = 50
+	// relayPerWorkspace is how many of a workspace's events one flush publishes at most,
+	// so a busy workspace does not hold back the others.
+	relayPerWorkspace = 200
+)
 
 func (r *Relay) Run(ctx context.Context) {
 	wake := make(chan struct{}, 1)
@@ -80,16 +96,7 @@ func (r *Relay) listen(ctx context.Context, wake chan<- struct{}) {
 func (r *Relay) flush(ctx context.Context) (int, error) {
 	n := 0
 	err := pgx.BeginFunc(ctx, r.Pool, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `SELECT id, seq, workspace_id, type, visibility, topics, data, created_at FROM events
-			WHERE published_at IS NULL ORDER BY created_at, seq LIMIT 200 FOR UPDATE SKIP LOCKED`)
-		if err != nil {
-			return err
-		}
-		batch, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Envelope, error) {
-			var e Envelope
-			err := row.Scan(&e.ID, &e.Seq, &e.WorkspaceID, &e.Type, &e.Visibility, &e.Topics, &e.Data, &e.OccurredAt)
-			return e, err
-		})
+		batch, err := claim(ctx, tx)
 		if err != nil || len(batch) == 0 {
 			return err
 		}
@@ -132,6 +139,38 @@ func (r *Relay) flush(ctx context.Context) (int, error) {
 		return nil
 	})
 	return n, err
+}
+
+// claim locks, for tx, the workspaces with pending events that no other relay holds (oldest
+// pending event first) and returns their pending events in publishing order: by workspace,
+// then seq. Another relay's flush skips a claimed workspace until tx ends.
+func claim(ctx context.Context, tx pgx.Tx) ([]Envelope, error) {
+	rows, err := tx.Query(ctx, `SELECT workspace_id FROM (
+			SELECT workspace_id, min(created_at) AS oldest FROM events WHERE published_at IS NULL
+			GROUP BY workspace_id ORDER BY oldest
+		) pending
+		WHERE pg_try_advisory_xact_lock($1::int, hashtext(workspace_id::text)) LIMIT $2`, relayLockClass, relayWorkspaces)
+	if err != nil {
+		return nil, err
+	}
+	wids, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	if err != nil || len(wids) == 0 {
+		return nil, err
+	}
+	rows, err = tx.Query(ctx, `SELECT e.id, e.seq, e.workspace_id, e.type, e.visibility, e.topics, e.data, e.created_at
+		FROM unnest($1::uuid[]) AS w(id) CROSS JOIN LATERAL (
+			SELECT id, seq, workspace_id, type, visibility, topics, data, created_at FROM events
+			WHERE workspace_id = w.id AND published_at IS NULL ORDER BY seq LIMIT $2 FOR UPDATE
+		) e
+		ORDER BY e.workspace_id, e.seq`, wids, relayPerWorkspace)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (Envelope, error) {
+		var e Envelope
+		err := row.Scan(&e.ID, &e.Seq, &e.WorkspaceID, &e.Type, &e.Visibility, &e.Topics, &e.Data, &e.OccurredAt)
+		return e, err
+	})
 }
 
 // supportChannelWorkspaces returns the workspaces in batch that mirror tickets to a

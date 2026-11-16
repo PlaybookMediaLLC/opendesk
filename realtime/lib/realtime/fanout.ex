@@ -27,8 +27,9 @@ defmodule Realtime.Fanout do
   `{id, seq, workspace_id, type: "event.hidden", visibility: "agents", data: {},
   occurred_at}`, which keeps `seq` contiguous for every agent without
   revealing the event; a malformed `team:` topic still hides the event from the
-  workspace. Repeats of an envelope (the relay delivers at least once) are
-  dropped by `Realtime.Fanout.Dedupe`.
+  workspace. Exact repeats of an envelope (the relay delivers at least once)
+  are dropped by `Realtime.Fanout.Dedupe`, by event id; distinct events are
+  never dropped for their `seq`.
 
   Live previews on `od.live.<wid>` (`contracts/realtime.md`, "Live events") are
   pushed as `"live"` `{type, data}` to `contact:<wid>:<contact_id>` and
@@ -88,7 +89,7 @@ defmodule Realtime.Fanout do
     with true <- Ids.uuid?(wid),
          {:ok, envelope} <- decode(body),
          {:ok, routes} <- routes(Ids.normalize(wid), envelope),
-         :ok <- Dedupe.check(Ids.normalize(wid), envelope["seq"]) do
+         :ok <- Dedupe.check(Ids.normalize(wid), envelope) do
       Enum.each(routes, fn {topic, payload} -> broadcast.(topic, "event", payload) end)
       Metrics.incr(:events)
       {:ok, Enum.map(routes, &elem(&1, 0))}

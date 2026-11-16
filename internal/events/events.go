@@ -208,11 +208,15 @@ func Publish(ctx context.Context, tx pgx.Tx, ev Event) (Envelope, error) {
 		}
 	}
 	env := Envelope{ID: ids.New(), WorkspaceID: ev.WorkspaceID, Type: ev.Type, Visibility: ev.Visibility,
-		Topics: topics, Data: data, OccurredAt: time.Now().UTC()}
-	if err := tx.QueryRow(ctx, `UPDATE workspaces SET event_seq = event_seq + 1 WHERE id = $1 RETURNING event_seq`,
-		ev.WorkspaceID).Scan(&env.Seq); err != nil {
+		Topics: topics, Data: data}
+	// The seq comes from the workspace row, locked until commit, so a workspace's events
+	// commit in seq order. The time is the database's, read once the lock is held, so it
+	// grows with seq too (the relay still publishes by seq, never by time).
+	if err := tx.QueryRow(ctx, `UPDATE workspaces SET event_seq = event_seq + 1 WHERE id = $1 RETURNING event_seq, clock_timestamp()`,
+		ev.WorkspaceID).Scan(&env.Seq, &env.OccurredAt); err != nil {
 		return Envelope{}, fmt.Errorf("next event seq: %w", err)
 	}
+	env.OccurredAt = env.OccurredAt.UTC()
 	if _, err := tx.Exec(ctx, `INSERT INTO events (workspace_id, seq, id, type, visibility, topics, data, created_at, team_id, user_ids)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 		env.WorkspaceID, env.Seq, env.ID, env.Type, env.Visibility, env.Topics, data, env.OccurredAt, team, users); err != nil {

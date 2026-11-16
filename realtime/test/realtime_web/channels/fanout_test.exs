@@ -107,12 +107,23 @@ defmodule RealtimeWeb.FanoutTest do
     refute_receive %Message{}, 50
   end
 
-  test "a repeated or older seq for the workspace is dropped", c do
+  test "a repeated envelope is dropped once broadcast", c do
     env = envelope(c, "agents", [])
     assert {:ok, _} = publish(c, env)
     assert publish(c, env) == {:error, :duplicate}
-    assert publish(c, %{env | "seq" => env["seq"] - 1}) == {:error, :duplicate}
-    assert {:ok, _} = publish(c, %{env | "seq" => env["seq"] + 1})
+
+    assert_receive %Message{event: "event", payload: %{"seq" => seq}}
+    assert seq == env["seq"]
+    refute_receive %Message{}, 50
+  end
+
+  test "an event that arrives after a later one is still broadcast", c do
+    later = envelope(c, "agents", [])
+    earlier = %{envelope(c, "agents", []) | "seq" => later["seq"] - 1}
+
+    assert {:ok, _} = publish(c, later)
+    assert {:ok, _} = publish(c, earlier)
+    assert publish(c, earlier) == {:error, :duplicate}
 
     seqs =
       for _ <- 1..2 do
@@ -120,7 +131,7 @@ defmodule RealtimeWeb.FanoutTest do
         seq
       end
 
-    assert seqs == [env["seq"], env["seq"] + 1]
+    assert seqs == [later["seq"], later["seq"] - 1]
     refute_receive %Message{}, 50
   end
 
