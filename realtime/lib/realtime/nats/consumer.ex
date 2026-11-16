@@ -168,7 +168,8 @@ defmodule Realtime.Nats.Consumer do
   end
 
   # This node's reply subject for revocation answers.
-  defp inbox, do: "_INBOX.od-realtime." <> Base.encode16(:crypto.strong_rand_bytes(12), case: :lower)
+  defp inbox,
+    do: "_INBOX.od-realtime." <> Base.encode16(:crypto.strong_rand_bytes(12), case: :lower)
 
   @doc false
   def backoff(attempt) do

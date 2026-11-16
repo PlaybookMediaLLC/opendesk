@@ -79,7 +79,9 @@ defmodule Realtime.Revocations do
     |> :ets.tab2list()
     |> Enum.filter(fn {_key, _at, mono} -> mono >= cutoff end)
     |> Enum.take(@max_export)
-    |> Enum.map(fn {{kind, id}, at, mono} -> [Atom.to_string(kind), id, at, max(now - mono, 0)] end)
+    |> Enum.map(fn {{kind, id}, at, mono} ->
+      [Atom.to_string(kind), id, at, max(now - mono, 0)]
+    end)
   end
 
   @doc """

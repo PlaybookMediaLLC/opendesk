@@ -5,10 +5,11 @@ defmodule Realtime.Fanout.Dedupe do
   The outbox relay delivers at least once: it publishes to NATS and then marks
   the row, so a failure in between publishes the same event again, seconds
   later. An envelope is recognised by its event `id` (or, without one, by its
-  workspace and `seq`, the outbox row's key), remembered for ten minutes. Only an exact repeat is dropped: every distinct event is broadcast,
-  whatever its `seq` relative to the ones before it, so an event that arrives
-  after a later one still reaches the sockets (the relay publishes a workspace's
-  events in `seq` order, and clients replay any gap through `GET /v1/events`).
+  workspace and `seq`, the outbox row's key), remembered for ten minutes. Only
+  an exact repeat is dropped: every distinct event is broadcast, whatever its
+  `seq` relative to the ones before it, so an event that arrives after a later
+  one still reaches the sockets (the relay publishes a workspace's events in
+  `seq` order, and clients replay any gap through `GET /v1/events`).
   """
 
   use GenServer
