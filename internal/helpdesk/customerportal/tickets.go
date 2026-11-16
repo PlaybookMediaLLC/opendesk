@@ -69,7 +69,7 @@ func (s *service) registerTickets(api huma.API) {
 	const prefix = "/v1/customer/portal/tickets"
 	huma.Register(api, s.operation("customer-portal-list-tickets", http.MethodGet, prefix, "List your support requests", false),
 		func(ctx context.Context, in *struct {
-			portalBrandParam
+			PortalBrandParam
 			httpx.ListParams
 		}) (*struct{ Body httpx.Page[customerTicket] }, error) {
 			p, err := auth.RequireCustomer(ctx)
@@ -101,7 +101,7 @@ func (s *service) registerTickets(api huma.API) {
 	huma.Register(api, s.operation("customer-portal-get-ticket", http.MethodGet, prefix+"/{id}", "Read your support request", false),
 		func(ctx context.Context, in *struct {
 			ID string `path:"id"`
-			portalBrandParam
+			PortalBrandParam
 		}) (*struct{ Body customerTicket }, error) {
 			p, err := auth.RequireCustomer(ctx)
 			if err != nil {
@@ -120,7 +120,7 @@ func (s *service) registerTickets(api huma.API) {
 	huma.Register(api, s.operation("customer-portal-list-messages", http.MethodGet, prefix+"/{id}/messages", "Read your public conversation", false),
 		func(ctx context.Context, in *struct {
 			ID string `path:"id"`
-			portalBrandParam
+			PortalBrandParam
 			httpx.ListParams
 		}) (*struct{ Body httpx.Page[customerMessage] }, error) {
 			p, err := auth.RequireCustomer(ctx)
@@ -266,7 +266,7 @@ func (s *service) registerTickets(api huma.API) {
 	op.DefaultStatus = http.StatusCreated
 	huma.Register(api, op, func(ctx context.Context, in *struct {
 		ID string `path:"id"`
-		portalBrandParam
+		PortalBrandParam
 		Body struct {
 			Body string `json:"body" minLength:"1" maxLength:"10000"`
 		}
@@ -313,9 +313,9 @@ func scanCustomerTicket(row pgx.Row) (customerTicket, error) {
 	return t, err
 }
 
-// portalBrandParam names the portal being viewed (contracts/customer-portal.md): the
+// PortalBrandParam names the portal being viewed (contracts/customer-portal.md): the
 // customer reads and answers only that brand's tickets.
-type portalBrandParam struct {
+type PortalBrandParam struct {
 	Slug string `query:"workspace_slug" required:"true" minLength:"1" maxLength:"40" doc:"The portal's brand slug: only that brand's requests are listed, read and answered"`
 }
 
