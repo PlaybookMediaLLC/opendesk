@@ -229,6 +229,7 @@ check_docker() {
         if need_sudo && [ -n "$SUDO" ] && $SUDO docker info >/dev/null 2>&1; then
             warn "Your user cannot talk to Docker, so this run uses sudo for docker."
             note "To drop that: sudo usermod -aG docker \$USER, then log in again."
+            note "Automatic updates run as you, the owner of the install, and need that too."
             DOCKER_SUDO=1
             return 0
         fi
@@ -458,6 +459,7 @@ wizard() {
     step "Updates"
     note "Each night opendesk-ctl can install a new release of the same major version:"
     note "it backs up first and goes back to the version before if the new one fails."
+    note "It runs as the user who owns the install directory, never as root unless root owns it."
     if confirm "Install new releases automatically?" yes; then
         AUTO_UPDATE_A=true
     else

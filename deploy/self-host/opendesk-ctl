@@ -80,8 +80,9 @@ env_set() {
     mv -f "$_tmp" "$DIR/.env"
 }
 
-# keep_owner gives files that root wrote (the nightly timer runs as root) back to
-# whoever owns the install directory, so its owner can still read them.
+# keep_owner gives files that root wrote (an upgrade run with sudo, or the nightly
+# timer of an install root owns) back to whoever owns the install directory, so its
+# owner can still read them.
 keep_owner() {
     [ "$(id -u)" = 0 ] || return 0
     # The numeric owner of one directory; stat's flags differ between GNU and BSD.
@@ -522,7 +523,8 @@ cmd_upgrade() {
 # ── Automatic updates ──────────────────────────────────────────────────────
 #
 # A systemd timer (or a cron entry where there is no systemd) runs
-# `opendesk-ctl auto-update run` each night around 04:00, server time. A run
+# `opendesk-ctl auto-update run` each night around 04:00, server time, as the user
+# who owns the install directory (root only when root owns it). A run
 # upgrades to the newest release of the same major version, never to a pre-release, and
 # never again to a release that failed here (.auto-update-failed); each run is
 # reported to the instance, which shows it in the admin panel and emails the
@@ -542,8 +544,29 @@ has_systemd() { [ -d /run/systemd/system ] && have systemctl; }
 
 cron_marker() { printf '# opendesk-auto-update %s' "$DIR"; }
 
+# run_as: "uid:gid" the nightly run uses, the owner of the install directory, so
+# the timer never runs, as root, a script another user can change. It refuses an
+# owner who cannot reach Docker without sudo (no one is there to type a password).
+run_as() {
+    # shellcheck disable=SC2012
+    _ug=$(ls -nd "$DIR" | awk '{ print $3 ":" $4 }')
+    _uid=${_ug%%:*}
+    if [ "$_uid" != 0 ] && [ -S /var/run/docker.sock ]; then
+        # shellcheck disable=SC2012
+        _sock=$(ls -ln /var/run/docker.sock | awk '{ print $3 ":" $4 }')
+        if [ "${_sock%%:*}" != "$_uid" ] && ! id -G "$_uid" 2>/dev/null | tr ' ' '\n' | grep -qx "${_sock#*:}"; then
+            _name=$(id -un "$_uid" 2>/dev/null || printf '%s' "$_uid")
+            warn "Automatic updates run as $_name, who owns $DIR, and $_name cannot use Docker without sudo." >&2
+            say "    Add them to the docker group (sudo usermod -aG docker $_name), then: $DIR/opendesk-ctl auto-update on" >&2
+            return 1
+        fi
+    fi
+    printf '%s' "$_ug"
+}
+
 schedule_install() {
     unit=$(unit_name)
+    _ug=$(run_as) || { schedule_remove; return 1; }
     if has_systemd; then
         tmpdir
         cat >"$TMPD/$unit.service" <<EOF
@@ -554,6 +577,10 @@ After=docker.service network-online.target
 
 [Service]
 Type=oneshot
+# The owner of $DIR, never root unless root owns it.
+User=${_ug%%:*}
+Group=${_ug#*:}
+NoNewPrivileges=yes
 Environment=OPENDESK_DIR=$DIR
 ExecStart="$DIR/opendesk-ctl" auto-update run
 EOF
@@ -569,6 +596,14 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOF
+        # Unchanged and enabled: nothing to do, and no root needed (the nightly
+        # run reaches here through the installer as the install's owner).
+        if cmp -s "$TMPD/$unit.service" "/etc/systemd/system/$unit.service" &&
+            cmp -s "$TMPD/$unit.timer" "/etc/systemd/system/$unit.timer" &&
+            systemctl is-enabled --quiet "$unit.timer" 2>/dev/null; then
+            ok "Automatic updates scheduled: systemd timer $unit.timer, each night around 04:00"
+            return 0
+        fi
         if as_root install -m 0644 "$TMPD/$unit.service" "$TMPD/$unit.timer" /etc/systemd/system/ 2>/dev/null &&
             as_root systemctl daemon-reload && as_root systemctl enable --now "$unit.timer" >/dev/null 2>&1; then
             ok "Automatic updates scheduled: systemd timer $unit.timer, each night around 04:00"
@@ -582,9 +617,21 @@ EOF
     fi
     _min=$(awk 'BEGIN { srand(); print int(rand() * 60) }')
     _line="$_min 4 * * * PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/homebrew/bin \"$DIR/opendesk-ctl\" auto-update run >>\"$DIR/auto-update.log\" 2>&1 $(cron_marker)"
-    { crontab -l 2>/dev/null | grep -vF "$(cron_marker)" || true; printf '%s\n' "$_line"; } | crontab - ||
+    { owner_crontab -l 2>/dev/null | grep -vF "$(cron_marker)" || true; printf '%s\n' "$_line"; } | owner_crontab - ||
         { warn "Could not add the cron entry"; return 1; }
     ok "Automatic updates scheduled: cron, each night at 04:$(printf '%02d' "$_min")"
+}
+
+# owner_crontab: crontab of the install directory's owner, so a cron entry added
+# with sudo still runs as that user, like the systemd timer.
+owner_crontab() {
+    # shellcheck disable=SC2012
+    _cuid=$(ls -nd "$DIR" | awk '{ print $3 }')
+    if [ "$(id -u)" = 0 ] && [ "$_cuid" != 0 ]; then
+        crontab -u "$(id -un "$_cuid")" "$@"
+    else
+        crontab "$@"
+    fi
 }
 
 schedule_remove() {
@@ -594,9 +641,11 @@ schedule_remove() {
         as_root rm -f "/etc/systemd/system/$unit.timer" "/etc/systemd/system/$unit.service" || true
         as_root systemctl daemon-reload || true
     fi
-    if have crontab && crontab -l 2>/dev/null | grep -qF "$(cron_marker)"; then
-        { crontab -l 2>/dev/null | grep -vF "$(cron_marker)" || true; } | crontab - || true
-    fi
+    for _ct in crontab owner_crontab; do
+        if have crontab && $_ct -l 2>/dev/null | grep -qF "$(cron_marker)"; then
+            { $_ct -l 2>/dev/null | grep -vF "$(cron_marker)" || true; } | $_ct - || true
+        fi
+    done
 }
 
 # report tells the instance how a run went (`opendesk updates report`); the admin
@@ -697,8 +746,8 @@ auto_status() {
         systemctl list-timers "$unit.timer" --no-pager 2>/dev/null | sed 's/^/    /' || true
         say "  Last runs (journalctl -u $unit):"
         journalctl -u "$unit" -n 15 --no-pager -o cat 2>/dev/null | sed 's/^/    /' || as_root journalctl -u "$unit" -n 15 --no-pager -o cat 2>/dev/null | sed 's/^/    /' || true
-    elif have crontab && crontab -l 2>/dev/null | grep -qF "$(cron_marker)"; then
-        say "  Schedule: cron ($(crontab -l | grep -F "$(cron_marker)" | cut -d' ' -f1-5))"
+    elif have crontab && owner_crontab -l 2>/dev/null | grep -qF "$(cron_marker)"; then
+        say "  Schedule: cron ($(owner_crontab -l | grep -F "$(cron_marker)" | cut -d' ' -f1-5))"
         if [ -f "$DIR/auto-update.log" ]; then
             say "  Last runs ($DIR/auto-update.log):"
             tail -n 15 "$DIR/auto-update.log" | sed 's/^/    /'

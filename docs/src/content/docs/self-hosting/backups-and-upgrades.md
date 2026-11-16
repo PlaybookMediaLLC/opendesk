@@ -129,7 +129,7 @@ A run never installs:
 /opt/opendesk/opendesk-ctl auto-update run      # run now, as the timer does
 ```
 
-`on` and `off` set `AUTO_UPDATE` in `.env` and add or remove the schedule (the systemd timer needs root, so they use `sudo`). The timer logs to the journal (`journalctl -u opendesk-update`); a cron entry to `auto-update.log` in the install directory. The app is down for the backup and the new version's first start, usually under a minute. Mail forwarded to opendesk and webhooks from mail providers are retried by their senders.
+`on` and `off` set `AUTO_UPDATE` in `.env` and add or remove the schedule (installing the systemd timer needs root, so they use `sudo`). The run itself is never root unless root owns the install: the timer, or the cron entry, runs as the user who owns the install directory, so that user must reach Docker without `sudo` (the `docker` group). When they cannot, `on` says so and installs no schedule. The timer logs to the journal (`journalctl -u opendesk-update`); a cron entry to `auto-update.log` in the install directory. The app is down for the backup and the new version's first start, usually under a minute. Mail forwarded to opendesk and webhooks from mail providers are retried by their senders.
 
 Each run is reported to the instance: the admin panel's **Health** page shows whether automatic updates are on and how the last run went, and the super admins get an email when one fails.
 

@@ -776,7 +776,8 @@ cd /opt/opendesk
 
 **Automatic updates** are on after the installer (`--no-auto-update` skips them):
 a systemd timer, or a cron entry, runs `opendesk-ctl auto-update run` each night
-around 04:00. It upgrades to the newest release of the same major version the
+around 04:00, as the user who owns the install directory (root only when root
+owns it; that user needs Docker without sudo, the `docker` group). It upgrades to the newest release of the same major version the
 way `upgrade` does, keeps its backups in `backups/auto/` (the newest three), and
 never retries a release that failed here. The admin panel's Health page shows
 the newest release and each run, and super admins get an email for a new major
