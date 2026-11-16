@@ -111,10 +111,10 @@ func Resolve(ctx context.Context, q db.Querier, in Input) (Result, error) {
 	return res, nil
 }
 
-// Count records a match of the rule Resolve returned in Result.Routed.RuleID, in the
-// transaction that creates the ticket.
-func Count(ctx context.Context, q db.Querier, ruleID uuid.UUID) error {
-	_, err := q.Exec(ctx, `UPDATE routing_rules SET run_count = run_count + 1 WHERE id = $1`, ruleID)
+// Count records a match of the workspace's rule Resolve returned in Result.Routed.RuleID,
+// in the transaction that creates the ticket.
+func Count(ctx context.Context, q db.Querier, wid, ruleID uuid.UUID) error {
+	_, err := q.Exec(ctx, `UPDATE routing_rules SET run_count = run_count + 1 WHERE workspace_id = $1 AND id = $2`, wid, ruleID)
 	return err
 }
 
