@@ -14,6 +14,8 @@ The self-host bundle includes a `postgres` container. You can point opendesk at 
 | `DATABASE_URL` | Request handlers. Can go through a connection pooler. |
 | `DATABASE_URL_DIRECT` | Migrations, background jobs and the event relay. Must be a **direct** connection, because they use session features such as `LISTEN`/`NOTIFY`. |
 
+The direct connection keeps at most 10 connections per process; add `pool_max_conns=<n>` to `DATABASE_URL_DIRECT` for a busy worker.
+
 When `DATABASE_URL_DIRECT` is empty, opendesk uses `DATABASE_URL` for both. That is right for the bundled Postgres or any database without a transaction-mode pooler in front.
 
 ## PlanetScale
