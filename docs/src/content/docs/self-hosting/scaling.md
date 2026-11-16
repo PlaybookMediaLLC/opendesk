@@ -33,7 +33,7 @@ NATS_URL=nats://nats-1:4222
 NATS_TOKEN=...
 ```
 
-Setting `NATS_URL` turns the embedded server off. A three-node NATS cluster with JetStream, or a managed NATS service, works.
+Setting `NATS_URL` turns the embedded server off. A three-node NATS cluster, or a managed NATS service, works. The `api` and `worker` roles refuse to start without `NATS_URL`: each process would otherwise run its own embedded server, and the worker's events would never reach the gateway the API's clients use.
 
 ## Database
 

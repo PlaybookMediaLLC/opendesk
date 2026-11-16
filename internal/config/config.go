@@ -755,10 +755,8 @@ func Load() (*Config, error) {
 		c.ProxyHops = n
 	}
 
-	switch c.Role {
-	case "all", "api", "worker":
-	default:
-		return nil, fmt.Errorf("OPENDESK_ROLE must be all, api or worker, got %q", c.Role)
+	if err := c.CheckRole(); err != nil {
+		return nil, err
 	}
 
 	// The development secrets below are public: only an instance that is development and
@@ -958,4 +956,23 @@ func envList(k string) []string {
 		}
 	}
 	return out
+}
+
+// CheckRole refuses a role the instance cannot run as. The api and worker roles are halves
+// of one instance that meet on NATS (the worker's relay publishes events, the API publishes
+// disconnects and live previews), so each needs the shared server in NATS_URL: with an
+// embedded server per process their messages would never meet.
+func (c *Config) CheckRole() error {
+	switch c.Role {
+	case "all":
+		return nil
+	case "api", "worker":
+		if strings.TrimSpace(c.NATSURL) == "" {
+			return fmt.Errorf("OPENDESK_ROLE=%s needs NATS_URL: the api and worker roles share one NATS server, "+
+				"and without it each process would run its own embedded one. Set NATS_URL, or run OPENDESK_ROLE=all", c.Role)
+		}
+		return nil
+	default:
+		return fmt.Errorf("OPENDESK_ROLE must be all, api or worker, got %q", c.Role)
+	}
 }

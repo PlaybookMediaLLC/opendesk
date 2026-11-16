@@ -17,7 +17,7 @@ type Options struct {
 	URL      string // external server; empty = embedded
 	Token    string
 	Listen   string // embedded listen address, "" = in-process only
-	StoreDir string
+	StoreDir string // unused: the embedded server keeps no state (kept for callers)
 	Name     string
 }
 
@@ -41,14 +41,13 @@ func Connect(o Options, log *slog.Logger) (*Conn, error) {
 		return &Conn{Conn: nc}, nil
 	}
 
+	// Core publish/subscribe only: opendesk keeps nothing in NATS (the outbox and replay are
+	// in Postgres), so JetStream stays off and the server holds no state on disk.
 	sopts := &server.Options{
-		ServerName:         "opendesk-embedded",
-		JetStream:          true,
-		StoreDir:           o.StoreDir,
-		NoSigs:             true,
-		Authorization:      o.Token,
-		MaxPayload:         4 << 20,
-		JetStreamMaxMemory: 64 << 20,
+		ServerName:    "opendesk-embedded",
+		NoSigs:        true,
+		Authorization: o.Token,
+		MaxPayload:    4 << 20,
 	}
 	if o.Listen == "" {
 		sopts.DontListen = true
@@ -81,7 +80,7 @@ func Connect(o Options, log *slog.Logger) (*Conn, error) {
 	if !ns.ReadyForConnections(10 * time.Second) {
 		return nil, errors.New("embedded nats did not start")
 	}
-	log.Info("nats embedded", "listen", o.Listen, "store", o.StoreDir)
+	log.Info("nats embedded", "listen", o.Listen)
 	nc, err := nats.Connect("", append(opts, nats.InProcessServer(ns))...)
 	if err != nil {
 		ns.Shutdown()

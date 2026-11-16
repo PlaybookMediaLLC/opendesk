@@ -31,6 +31,9 @@ func main() {
 			}
 			if role, _ := cmd.Flags().GetString("role"); role != "" {
 				cfg.Role = role
+				if err := cfg.CheckRole(); err != nil {
+					return err
+				}
 			}
 			log := app.NewLogger(cfg)
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
