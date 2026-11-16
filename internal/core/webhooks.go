@@ -775,18 +775,24 @@ func cleanDescription(s string) string {
 	return truncate(string(out), 500)
 }
 
-// createDelivery stores a delivery with its fixed payload and enqueues it in tx.
-// createDelivery queues one delivery. team is the private team of the event's ticket (nil
-// outside one): the delivery goes out only while the webhook is still granted it.
+// createDelivery stores a delivery with its fixed payload and enqueues it in tx. team is the
+// private team of the event's ticket (nil outside one): the delivery goes out only while the
+// webhook is still granted it. A webhook has one delivery per event (the unique
+// (webhook_id, event_id) index): when the pair already has one, nothing is stored or
+// queued and the id is uuid.Nil.
 func (s *svc) createDelivery(ctx context.Context, tx pgx.Tx, wid, hookID uuid.UUID, pl webhookPayload, team *uuid.UUID) (uuid.UUID, error) {
 	body, err := json.Marshal(pl)
 	if err != nil {
 		return uuid.Nil, err
 	}
 	id := ids.New()
-	if _, err := tx.Exec(ctx, `INSERT INTO webhook_deliveries (id, workspace_id, webhook_id, event_id, event_type, payload, team_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`, id, wid, hookID, pl.ID, pl.Type, body, team); err != nil {
+	tag, err := tx.Exec(ctx, `INSERT INTO webhook_deliveries (id, workspace_id, webhook_id, event_id, event_type, payload, team_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (webhook_id, event_id) DO NOTHING`, id, wid, hookID, pl.ID, pl.Type, body, team)
+	if err != nil {
 		return uuid.Nil, err
+	}
+	if tag.RowsAffected() == 0 {
+		return uuid.Nil, nil
 	}
 	_, err = s.d.Jobs.InsertTx(ctx, tx, jobs.WebhookDeliverArgs{DeliveryID: id},
 		&river.InsertOpts{Queue: jobs.QueueWebhooks, MaxAttempts: webhookMaxAttempts})
@@ -845,14 +851,8 @@ func (w *dispatchWorker) Work(ctx context.Context, job *river.Job[jobs.WebhookDi
 			if !eventMatches(h.filter, pl.Type) || !webhookSeesTeam(h.teams, team) {
 				continue
 			}
-			var exists bool
-			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM webhook_deliveries WHERE webhook_id = $1 AND event_id = $2)`,
-				h.id, pl.ID).Scan(&exists); err != nil {
-				return err
-			}
-			if exists {
-				continue
-			}
+			// A repeated dispatch of the event (the relay delivers at least once) finds the
+			// delivery already stored and adds none.
 			if _, err := w.s.createDelivery(ctx, tx, a.WorkspaceID, h.id, pl, team); err != nil {
 				return err
 			}

@@ -294,6 +294,25 @@ func TestWebhookSignature(t *testing.T) {
 	if err := dw.Work(ctx, &river.Job[jobs.WebhookDispatchArgs]{Args: jobs.WebhookDispatchArgs{WorkspaceID: wid, EventSeq: seq}}); err != nil {
 		t.Fatal(err)
 	}
+	// Repeated dispatches of the event, concurrent ones included, add no second delivery.
+	repeats := make(chan error, 2)
+	for range 2 {
+		go func() {
+			repeats <- dw.Work(ctx, &river.Job[jobs.WebhookDispatchArgs]{Args: jobs.WebhookDispatchArgs{WorkspaceID: wid, EventSeq: seq}})
+		}()
+	}
+	for range 2 {
+		if err := <-repeats; err != nil {
+			t.Fatal(err)
+		}
+	}
+	var deliveries int
+	if err := e.d.DB.Pool.QueryRow(ctx, `SELECT count(*) FROM webhook_deliveries WHERE workspace_id = $1 AND event_type = 'team.created'`, wid).Scan(&deliveries); err != nil {
+		t.Fatal(err)
+	}
+	if deliveries != 1 {
+		t.Fatalf("%d deliveries for one event", deliveries)
+	}
 	var did uuid.UUID
 	if err := e.d.DB.Pool.QueryRow(ctx, `SELECT id FROM webhook_deliveries WHERE workspace_id = $1 AND event_type = 'team.created'`, wid).Scan(&did); err != nil {
 		t.Fatal(err)
