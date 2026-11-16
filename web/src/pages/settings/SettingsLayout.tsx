@@ -241,7 +241,7 @@ export default function SettingsLayout() {
       <nav aria-label={t("titles.settings")} className="hidden w-[232px] shrink-0 overflow-y-auto border-r border-line px-2.5 pb-6 pt-4 md:block">
         {groups.map((g, gi) => (
           <div key={g.title} className={gi ? "mt-4" : undefined}>
-            <div className="label-caps px-2 pb-1">{t(`groups.${g.title}`)}</div>
+            <div className="label-caps px-2 pb-1" data-ph-unmask>{t(`groups.${g.title}`)}</div>
             <div className="flex flex-col gap-px">
               {g.items.map((i) => {
                 const active = current === i.to && !(i.to === "/settings/brands" && activeBrand);
@@ -264,7 +264,7 @@ export default function SettingsLayout() {
                       />
                     )}
                     {i.icon}
-                    <span className="relative z-10 truncate">{t(`settings.${i.label}`)}</span>
+                    <span className="relative z-10 truncate" data-ph-unmask>{t(`settings.${i.label}`)}</span>
                   </Link>
                   {i.to === "/settings/brands" &&
                     brands.map((b) => {

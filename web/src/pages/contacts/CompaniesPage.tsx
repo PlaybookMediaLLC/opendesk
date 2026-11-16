@@ -98,7 +98,7 @@ export default function CompaniesPage() {
         </div>
       </PageHeader>
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto" data-ph-mask>
         <DirectoryFilters scope="companies" search={search} onSearch={(next) => void navigate({ search: next })} />
 
         {!list.isLoading && rows.length > 0 && (

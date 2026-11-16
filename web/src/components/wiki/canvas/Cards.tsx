@@ -70,6 +70,7 @@ export const Card = memo(function Card({ node, selected, editing, canEdit, handl
   const isGroup = node.type === "group";
   return (
     <div
+      data-ph-mask
       data-node-id={node.id}
       data-type={node.type}
       tabIndex={0}
