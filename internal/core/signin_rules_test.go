@@ -122,6 +122,19 @@ func TestSharedLimiter(t *testing.T) {
 	if a.Shared(ctx, key, 4, time.Minute) || b.Shared(ctx, key, 4, time.Minute) {
 		t.Fatal("limit not shared")
 	}
+
+	// SharedTake counts the same way and tells what is left of the window.
+	key = "test:" + crypto.RandomString(8)
+	if ok, remaining, reset := a.SharedTake(ctx, key, 3, time.Minute); !ok || remaining != 2 || reset <= 0 || reset > time.Minute {
+		t.Fatalf("first take: %v %d %v", ok, remaining, reset)
+	}
+	if ok, remaining, _ := b.SharedTake(ctx, key, 3, time.Minute); !ok || remaining != 1 {
+		t.Fatalf("second take: %v %d", ok, remaining)
+	}
+	b.SharedTake(ctx, key, 3, time.Minute)
+	if ok, remaining, _ := a.SharedTake(ctx, key, 3, time.Minute); ok || remaining != 0 {
+		t.Fatalf("over the limit: %v %d", ok, remaining)
+	}
 }
 
 // Changes to how someone signs in are emailed to them.
