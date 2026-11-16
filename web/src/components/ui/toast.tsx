@@ -1,4 +1,5 @@
 import { Toaster as Sonner, toast as sonner } from "sonner";
+import { i18n } from "@/i18n";
 import { errorMessage } from "@/lib/api/client";
 import { useTheme } from "@/lib/theme";
 import { Check, Clock, Info, Undo2, X } from "lucide-react";
@@ -78,7 +79,7 @@ export const toast = {
   success: (msg: string, opts?: Opts) => sonner.success(msg, { ...withAction(opts), icon: <ToastIcon hue="green"><Check /></ToastIcon> }),
   info: (msg: string, opts?: Opts) => sonner(msg, { ...withAction(opts), icon: <ToastIcon hue="blue"><Info /></ToastIcon> }),
   /** A done destructive action with a way back. */
-  undo: (msg: string, onUndo: () => void, label = "Undo") =>
+  undo: (msg: string, onUndo: () => void, label: string = i18n.t("common:actions.undo")) =>
     sonner(msg, { ...withAction({ action: { label, onClick: onUndo } }), icon: <ToastIcon hue="gray"><Undo2 /></ToastIcon> }),
   /** Something about to happen on its own clock (a held reply): the bar runs whatever the
    * pointer does, and the caller dismisses the toast when the moment comes. */

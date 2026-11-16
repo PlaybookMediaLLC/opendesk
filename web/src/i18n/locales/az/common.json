@@ -7,7 +7,13 @@
     "apply": "Tətbiq et",
     "copy": "Kopyala",
     "back": "Geri",
-    "continue": "Davam et"
+    "continue": "Davam et",
+    "undo": "Geri qaytar"
   },
-  "aboutCost": "təxminən {{cost}}"
+  "aboutCost": "təxminən {{cost}}",
+  "errors": {
+    "generic": "Nəsə səhv getdi",
+    "network": "Serverə qoşulmaq mümkün deyil. Bağlantınızı yoxlayın.",
+    "rateLimited": "Həddindən çox cəhd. Bir az gözləyin və yenidən cəhd edin."
+  }
 }

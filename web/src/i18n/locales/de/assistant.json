@@ -114,5 +114,8 @@
     "label": "Abrechnungstickets der Woche labeln",
     "breach": "Was überschreitet bald die SLA?",
     "mine": "Was wartet auf mich?"
+  },
+  "errors": {
+    "answerFailed": "Ollie konnte nicht antworten. Versuche es erneut."
   }
 }

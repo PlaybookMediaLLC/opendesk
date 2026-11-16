@@ -7,7 +7,13 @@
     "apply": "適用",
     "copy": "コピー",
     "back": "戻る",
-    "continue": "続ける"
+    "continue": "続ける",
+    "undo": "元に戻す"
   },
-  "aboutCost": "約 {{cost}}"
+  "aboutCost": "約 {{cost}}",
+  "errors": {
+    "generic": "問題が発生しました",
+    "network": "サーバーに接続できません。接続を確認してください。",
+    "rateLimited": "試行回数が多すぎます。しばらく待ってからもう一度お試しください。"
+  }
 }

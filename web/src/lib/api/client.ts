@@ -3,6 +3,7 @@
 // the browser sends to /v1/auth/refresh (contracts/tokens.md). A 401 triggers
 // one shared refresh of that account, then the request is retried once.
 
+import { i18n } from "@/i18n";
 import type { TokenResponse } from "./types";
 
 export type Problem = {
@@ -79,10 +80,10 @@ export function isApiError(e: unknown, code?: string): e is ApiError {
 }
 
 /** A human message for any thrown value, for toasts and inline errors. */
-export function errorMessage(e: unknown, fallback = "Something went wrong"): string {
+export function errorMessage(e: unknown, fallback: string = i18n.t("common:errors.generic")): string {
   if (e instanceof ApiError) {
-    if (e.code === "network_error") return "Can't reach the server. Check your connection.";
-    if (e.code === "rate_limited") return "Too many attempts. Wait a moment and try again.";
+    if (e.code === "network_error") return i18n.t("common:errors.network");
+    if (e.code === "rate_limited") return i18n.t("common:errors.rateLimited");
     const field = e.errors?.find((x) => x.message)?.message;
     return e.detail || field || e.title || fallback;
   }

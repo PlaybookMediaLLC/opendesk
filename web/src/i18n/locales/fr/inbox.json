@@ -1140,5 +1140,14 @@
   "wiki": {
     "title": "Wiki",
     "untitled": "Sans titre"
+  },
+  "ticketActions": {
+    "updateFailed": "Impossible de mettre à jour le ticket",
+    "bulkUpdateFailed": "Impossible de mettre à jour ces tickets",
+    "dismissFailed": "Impossible d’écarter la suggestion",
+    "requiredFields": "Remplissez les champs obligatoires avant de résoudre",
+    "requiredFieldsBulk": "Certains tickets ont des champs obligatoires à remplir avant d’être résolus",
+    "labelsAdminOnly": "Seuls les admins peuvent créer des libellés. Choisissez-en un existant.",
+    "notSent": "Non envoyé"
   }
 }

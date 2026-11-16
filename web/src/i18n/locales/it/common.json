@@ -7,7 +7,13 @@
     "apply": "Applica",
     "copy": "Copia",
     "back": "Indietro",
-    "continue": "Continua"
+    "continue": "Continua",
+    "undo": "Annulla"
   },
-  "aboutCost": "circa {{cost}}"
+  "aboutCost": "circa {{cost}}",
+  "errors": {
+    "generic": "Qualcosa è andato storto",
+    "network": "Impossibile raggiungere il server. Controlla la connessione.",
+    "rateLimited": "Troppi tentativi. Attendi un momento e riprova."
+  }
 }

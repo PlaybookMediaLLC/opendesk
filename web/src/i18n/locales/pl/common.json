@@ -7,7 +7,13 @@
     "apply": "Zastosuj",
     "copy": "Kopiuj",
     "back": "Wstecz",
-    "continue": "Dalej"
+    "continue": "Dalej",
+    "undo": "Cofnij"
   },
-  "aboutCost": "około {{cost}}"
+  "aboutCost": "około {{cost}}",
+  "errors": {
+    "generic": "Coś poszło nie tak",
+    "network": "Nie można połączyć się z serwerem. Sprawdź połączenie.",
+    "rateLimited": "Zbyt wiele prób. Odczekaj chwilę i spróbuj ponownie."
+  }
 }

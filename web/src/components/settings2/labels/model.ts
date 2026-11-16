@@ -5,6 +5,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { toast } from "@/components/ui/toast";
+import { i18n } from "@/i18n";
 import { api, rows } from "@/lib/api/endpoints";
 import type { Tag as ApiTag, TagGroup as ApiTagGroup } from "@/lib/api/types";
 import { q, qk } from "@/lib/queries";
@@ -90,7 +91,7 @@ export function useLabelWrites(_caps: LabelCaps = CAPS) {
     },
     onError: (e, _v, ctx) => {
       if (ctx?.prev) qc.setQueryData(key, ctx.prev);
-      toast.error(e, "Couldn't save the label");
+      toast.error(e, i18n.t("settings:labels.saveFailed"));
     },
     onSettled: settle,
   });
@@ -103,7 +104,7 @@ export function useLabelWrites(_caps: LabelCaps = CAPS) {
     },
     onError: (e, _v, ctx) => {
       if (ctx?.prev) qc.setQueryData(key, ctx.prev);
-      toast.error(e, "Couldn't delete the label");
+      toast.error(e, i18n.t("settings:labels.deleteFailed"));
     },
     onSettled: settle,
   });
@@ -133,7 +134,7 @@ export function useLabelStructureWrites() {
         }
       } catch (e) {
         if (prev) qc.setQueryData(qk.tags, prev);
-        toast.error(e, "Couldn't reorder the labels");
+        toast.error(e, i18n.t("settings:labels.reorderFailed"));
       } finally {
         refresh();
       }

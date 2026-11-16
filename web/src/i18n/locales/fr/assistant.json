@@ -106,5 +106,8 @@
     "label": "Étiqueter les tickets de facturation de cette semaine",
     "breach": "Quels SLA seront bientôt dépassés ?",
     "mine": "Qu’est-ce qui attend mon intervention ?"
+  },
+  "errors": {
+    "answerFailed": "Ollie n’a pas pu répondre. Réessayez."
   }
 }

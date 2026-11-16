@@ -115,5 +115,8 @@
     "label": "Label this week's billing tickets",
     "breach": "What breaches SLA soon?",
     "mine": "What's waiting on me?"
+  },
+  "errors": {
+    "answerFailed": "Ollie could not answer. Try again."
   }
 }

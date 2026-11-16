@@ -7,7 +7,13 @@
     "apply": "Appliquer",
     "copy": "Copier",
     "back": "Retour",
-    "continue": "Continuer"
+    "continue": "Continuer",
+    "undo": "Annuler"
   },
-  "aboutCost": "environ {{cost}}"
+  "aboutCost": "environ {{cost}}",
+  "errors": {
+    "generic": "Une erreur s’est produite",
+    "network": "Impossible de joindre le serveur. Vérifiez votre connexion.",
+    "rateLimited": "Trop de tentatives. Patientez un instant et réessayez."
+  }
 }

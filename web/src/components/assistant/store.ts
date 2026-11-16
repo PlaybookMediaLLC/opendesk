@@ -5,6 +5,7 @@
 import { create } from "zustand";
 import { queryClient } from "@/lib/queryClient";
 import { errorMessage } from "@/lib/api/client";
+import { i18n } from "@/i18n";
 import { assistantApi, type Approval, type AssistantStep, type PageContext, type RunEvent, type Transcript } from "./api";
 import { pageContext } from "./context";
 import { qk } from "@/lib/queries";
@@ -150,7 +151,7 @@ async function run(go: (signal: AbortSignal) => Promise<void>) {
   try {
     await go(c.signal);
   } catch (err) {
-    if ((err as Error)?.name !== "AbortError") patchLast((en) => ({ ...en, error: errorMessage(err, "Ollie could not answer. Try again.") }));
+    if ((err as Error)?.name !== "AbortError") patchLast((en) => ({ ...en, error: errorMessage(err, i18n.t("assistant:errors.answerFailed")) }));
   } finally {
     if (controller === c) controller = null;
     useOllie.setState({ running: false });
