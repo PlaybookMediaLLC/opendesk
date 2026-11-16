@@ -97,12 +97,13 @@ LEFT JOIN users u ON u.id = t.assignee_id`
 
 // SLAReplyPendingSQL is whether the team has yet to reply in the ticket's current SLA cycle,
 // on the tickets alias a ("" for none): in the first cycle (sla_started_at null) until its
-// first response, in a cycle a reopen started until the team's first reply in it.
+// first response (first_responded_at, which merges and imports keep too), in a cycle a reopen
+// started until the team's first reply in it (sla_responded_at).
 func SLAReplyPendingSQL(a string) string {
 	if a != "" {
 		a += "."
 	}
-	return "(" + a + "sla_responded_at IS NULL AND (" + a + "sla_started_at IS NOT NULL OR " + a + "first_responded_at IS NULL))"
+	return "(CASE WHEN " + a + "sla_started_at IS NULL THEN " + a + "first_responded_at IS NULL ELSE " + a + "sla_responded_at IS NULL END)"
 }
 
 // LastNoteSQL is the ticket's newest internal note (Ticket.last_note) as JSON, or NULL: a
