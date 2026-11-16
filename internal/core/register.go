@@ -61,6 +61,7 @@ func RegisterWorkers(d *deps.Deps, w *river.Workers) {
 	river.AddWorker(w, &pushBadgeWorker{s: s})
 	river.AddWorker(w, &notificationSweepWorker{s: s})
 	river.AddWorker(w, &notificationEmailWorker{s: s})
+	river.AddWorker(w, &workspacePurgeWorker{s: s})
 }
 
 // Periodic returns this area's scheduled jobs.

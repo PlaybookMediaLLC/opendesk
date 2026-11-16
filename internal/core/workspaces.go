@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"regexp"
 	"slices"
@@ -14,6 +15,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/riverqueue/river"
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/useopendesk/opendesk/internal/audit"
@@ -511,23 +513,57 @@ func (s *svc) purgeFiles(keys []string) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
-		failed := 0
-		for _, k := range keys {
-			if k == "" {
-				continue
-			}
-			if err := s.d.Storage.Delete(ctx, k); err != nil {
-				failed++
-			}
-		}
-		if failed > 0 {
-			s.d.Log.Warn("purge files", "failed", failed, "total", len(keys))
-		}
+		s.deleteFiles(ctx, keys)
 	}()
 }
 
+// deleteFiles deletes stored objects and logs how many it could not.
+func (s *svc) deleteFiles(ctx context.Context, keys []string) {
+	if s.d.Storage == nil {
+		return
+	}
+	failed := 0
+	for _, k := range keys {
+		if k == "" {
+			continue
+		}
+		if err := s.d.Storage.Delete(ctx, k); err != nil {
+			failed++
+		}
+	}
+	if failed > 0 {
+		s.d.Log.Warn("purge files", "failed", failed, "total", len(keys))
+	}
+}
+
+// syncDeleteRows bounds the workspace deleted within the request: past this many rows in
+// its largest tables, deleteWorkspace closes it at once and a job removes it in batches.
+var syncDeleteRows = 10_000
+
+// workspacePurgeTables are the largest tables of a workspace, emptied in batches before the
+// workspace row goes (and with it, by cascade, what is left). Every reference to their rows
+// is ON DELETE CASCADE or SET NULL, so any batch can go first.
+var workspacePurgeTables = []string{"events", "audit_logs", "notifications", "activities", "messages", "inbound_emails", "tickets"}
+
+// purgeBatch is how many rows one statement of the purge deletes.
+const purgeBatch = 1000
+
+// largeWorkspace reports a workspace with more than syncDeleteRows rows in its largest tables.
+func largeWorkspace(ctx context.Context, q db.Querier, wid uuid.UUID) (bool, error) {
+	var n int
+	err := q.QueryRow(ctx, `SELECT count(*) FROM (
+		(SELECT 1 FROM messages WHERE workspace_id = $1 LIMIT $2)
+		UNION ALL (SELECT 1 FROM activities WHERE workspace_id = $1 LIMIT $2)
+		UNION ALL (SELECT 1 FROM events WHERE workspace_id = $1 LIMIT $2)
+		UNION ALL (SELECT 1 FROM audit_logs WHERE workspace_id = $1 LIMIT $2)) big`, wid, syncDeleteRows+1).Scan(&n)
+	return n > syncDeleteRows, err
+}
+
 // deleteWorkspace removes a workspace and everything it owns. It returns the members
-// to disconnect and the stored files to purge.
+// to disconnect and the stored files to purge. A large workspace (largeWorkspace) is closed
+// in tx instead: suspended (so its API keys, widget, help center, mail, webhooks and jobs
+// stop), marked deleting_at, its members, invitations and private team grants removed, and
+// core.workspace_purge queued to remove its files and rows in batches.
 func (s *svc) deleteWorkspace(ctx context.Context, tx pgx.Tx, wid uuid.UUID) ([]uuid.UUID, []string, error) {
 	rows, err := tx.Query(ctx, `SELECT user_id FROM members WHERE workspace_id = $1`, wid)
 	if err != nil {
@@ -537,9 +573,15 @@ func (s *svc) deleteWorkspace(ctx context.Context, tx pgx.Tx, wid uuid.UUID) ([]
 	if err != nil {
 		return nil, nil, err
 	}
-	keys, err := fileKeys(ctx, tx, wid)
+	large, err := largeWorkspace(ctx, tx, wid)
 	if err != nil {
 		return nil, nil, err
+	}
+	var keys []string
+	if !large {
+		if keys, err = fileKeys(ctx, tx, wid); err != nil {
+			return nil, nil, err
+		}
 	}
 	if err := billing.EnqueueCancel(ctx, s.d, tx, wid); err != nil {
 		return nil, nil, err
@@ -558,10 +600,80 @@ func (s *svc) deleteWorkspace(ctx context.Context, tx pgx.Tx, wid uuid.UUID) ([]
 			return nil, nil, err
 		}
 	}
+	if large {
+		for _, q := range []string{
+			`UPDATE workspaces SET suspended_at = COALESCE(suspended_at, now()), deleting_at = now() WHERE id = $1`,
+			// Grants first: each needs its granter on the team until it goes.
+			`DELETE FROM private_team_grants WHERE workspace_id = $1`,
+			`DELETE FROM invitations WHERE workspace_id = $1`,
+			`DELETE FROM members WHERE workspace_id = $1`,
+		} {
+			if _, err := tx.Exec(ctx, q, wid); err != nil {
+				return nil, nil, err
+			}
+		}
+		if _, err := s.d.Jobs.InsertTx(ctx, tx, jobs.WorkspacePurgeArgs{WorkspaceID: wid}, nil); err != nil {
+			return nil, nil, err
+		}
+		return members, nil, nil
+	}
 	if _, err := tx.Exec(ctx, `DELETE FROM workspaces WHERE id = $1`, wid); err != nil {
 		return nil, nil, err
 	}
 	return members, keys, nil
+}
+
+// workspacePurgeWorker removes a large workspace whose deletion was asked for: its stored
+// files, its largest tables in batches of purgeBatch rows, each its own short statement,
+// then the workspace row. A retry starts where the last attempt stopped.
+type workspacePurgeWorker struct {
+	river.WorkerDefaults[jobs.WorkspacePurgeArgs]
+	s *svc
+}
+
+func (w *workspacePurgeWorker) Timeout(*river.Job[jobs.WorkspacePurgeArgs]) time.Duration {
+	return time.Hour
+}
+
+func (w *workspacePurgeWorker) Work(ctx context.Context, job *river.Job[jobs.WorkspacePurgeArgs]) error {
+	pool := w.s.d.DB.Pool
+	wid := job.Args.WorkspaceID
+	var deleting bool
+	err := pool.QueryRow(ctx, `SELECT deleting_at IS NOT NULL FROM workspaces WHERE id = $1`, wid).Scan(&deleting)
+	if db.IsNotFound(err) {
+		return nil // already gone
+	}
+	if err != nil {
+		return err
+	}
+	// Only a workspace whose deletion was asked for is purged.
+	if !deleting {
+		return nil
+	}
+	// Files first, while their rows still name them; nobody reads a closed workspace's files.
+	keys, err := fileKeys(ctx, pool, wid)
+	if err != nil {
+		return err
+	}
+	w.s.deleteFiles(ctx, keys)
+	for _, table := range workspacePurgeTables {
+		t := pgx.Identifier{table}.Sanitize()
+		q := fmt.Sprintf(`DELETE FROM %[1]s WHERE id IN (SELECT id FROM %[1]s WHERE workspace_id = $1 LIMIT %[2]d)`, t, purgeBatch)
+		for {
+			tag, err := pool.Exec(ctx, q, wid)
+			if err != nil {
+				return fmt.Errorf("purge %s: %w", table, err)
+			}
+			if tag.RowsAffected() < purgeBatch {
+				break
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+		}
+	}
+	_, err = pool.Exec(ctx, `DELETE FROM workspaces WHERE id = $1 AND deleting_at IS NOT NULL`, wid)
+	return err
 }
 
 func (s *svc) registerWorkspaces(api huma.API) {
