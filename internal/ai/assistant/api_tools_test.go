@@ -91,6 +91,8 @@ func TestReachable(t *testing.T) {
 		{"GET", "/v1/api-keys", true}, {"POST", "/v1/api-keys", false}, {"GET", "/v1/auth/config", false},
 		{"PATCH", "/v1/widget/settings", true}, {"GET", "/v1/widget/conversations", false},
 		{"POST", "/v1/tickets/{id}/messages", false}, {"POST", "/v1/tickets/{id}/merge", true},
+		// Only listed areas are open; a person's sign-ins and devices are not read.
+		{"GET", "/v1/some-new-area", false}, {"GET", "/v1/some-new-area/x", false}, {"GET", "/v1/me/sessions", false}, {"GET", "/v1/me", true},
 	} {
 		if got := reachable(c.method, c.path); got != c.want {
 			t.Errorf("%s %s: %v", c.method, c.path, got)

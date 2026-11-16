@@ -50,14 +50,15 @@ type AISettings struct {
 	// (contracts/bots.md).
 	WidgetMaxReplies    int      `json:"widget_max_replies"`
 	WidgetBlockedTopics []string `json:"widget_blocked_topics"`
-	WidgetMonthlyCapUSD float64  `json:"widget_monthly_cap_usd" doc:"US dollars of AI usage per month the widget agent may use; 0 = no cap"`
+	WidgetMonthlyCapUSD float64  `json:"widget_monthly_cap_usd" doc:"US dollars of AI usage per month the widget agent may use; 0 = no cap (an explicit choice); default 100"`
 	WidgetCollectEmail  bool     `json:"widget_collect_email"`
 }
 
 // DefaultAISettings apply to keys a workspace has not set.
 func DefaultAISettings() AISettings {
 	return AISettings{Enabled: true, Assistant: true, AssistantAuto: []string{}, DraftTools: true, Tone: "friendly", ReplyLanguage: "customer",
-		WidgetMaxReplies: DefaultWidgetMaxReplies, WidgetBlockedTopics: []string{}, WidgetCollectEmail: true}
+		WidgetMaxReplies: DefaultWidgetMaxReplies, WidgetBlockedTopics: []string{}, WidgetCollectEmail: true,
+		WidgetMonthlyCapUSD: DefaultWidgetMonthlyCapUSD}
 }
 
 // AI returns the workspace's AI settings with defaults for unset keys.
@@ -138,6 +139,10 @@ type AISettingsPatch struct {
 // DefaultWidgetMaxReplies is how many replies the widget agent gives in one
 // conversation before it hands off, unless the workspace chose otherwise.
 const DefaultWidgetMaxReplies = 20
+
+// DefaultWidgetMonthlyCapUSD bounds what the widget agent spends in a month (US dollars)
+// until the workspace sets its own cap; an explicit 0 removes the cap.
+const DefaultWidgetMonthlyCapUSD = 100.0
 
 // AssistantAutoTools are the built-in assistant changes a workspace may let Ollie make
 // without asking first. Replies and anything else that reaches someone outside, and

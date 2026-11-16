@@ -357,8 +357,12 @@ apply that deletion. Telegram reports edits but not deletions through its Bot AP
 Linked agents can talk to Ollie inside a mapped ticket thread. They can also ask Ollie
 to create a ticket from an enabled destination's general channel or an unrelated thread.
 The engine gives Ollie the visible ticket and its messages when there is one, plus a bounded per-agent conversation history.
-Ticket content is delimited as untrusted data. Ollie may answer a question or emit one
-of the typed actions below; generated text is never executed as a command.
+Ticket content is delimited as untrusted data, in the user turn, never the system prompt: the ticket's
+facts in a `<ticket>` block, then its thread with one `<message>` data block per message whose speaker
+(customer, agent, internal note, ...) the application sets from the message itself, so a label written in
+a message's text cannot pass for another speaker; the agent's own words come in `<agent_message>`. Ollie
+may answer a question or emit one of the typed actions below; generated text is never executed as a
+command.
 
 | command | effect |
 | --- | --- |
@@ -380,8 +384,11 @@ matching nonce applies or discards the change and removes the preview's controls
 answer is posted in the thread. A button whose change is gone (stale, already used, expired)
 says so privately and loses its controls; one whose change waits for someone else says so and
 keeps them. A card change answers with the card's own edit, not a message. Drafting a reply
-does not send it. Notes, self-assignment, status and priority changes can run immediately
-after the model emits their validated schema. A pending action and the ticket mutation are consumed in
+does not send it. On a ticket whose thread or contact holds text from outside the workspace (any
+inbound message, any message not written by a member, or a customer on the ticket), every change Ollie
+proposes, notes, self-assignment, status and priority included, waits for the same confirmation; its
+preview shows the note's text or the new value. Elsewhere notes, self-assignment, status and priority
+changes can run immediately after the model emits their validated schema. A pending action and the ticket mutation are consumed in
 one transaction, so two confirmation events cannot apply it twice. A change Ollie makes
 runs with the linked agent's role and checks and is attributed to Ollie on their behalf
 (`auth.Principal.Assistant`: activity actor `ai` with the agent as `user_id`, as for the
@@ -464,8 +471,9 @@ available." `/opendesk link <code>` needs no number.
   `.identity_unlinked` for the identity a new link replaces. One external account links to
   one agent per connection and one agent to one external account.
 - Webhooks are found by an opaque connection UUID, body-capped at 1 MiB, then authenticated
-  before parsing: Slack HMAC with a five-minute timestamp window, Discord Ed25519, Telegram
-  constant-time secret-token comparison.
+  before parsing: Slack HMAC with a five-minute timestamp window, Discord Ed25519 with a
+  five-minute window on its signed timestamp, Telegram constant-time secret-token comparison. A
+  connection whose secret is empty verifies nothing.
 - Inbound event persistence and River enqueue share one transaction. Provider event IDs
   deduplicate retries. Link codes are random, stored hashed, expire after ten minutes and
   are consumed in the identity transaction.

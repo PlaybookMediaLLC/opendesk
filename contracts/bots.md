@@ -169,3 +169,8 @@ The bot's personality is one delimited block, `<bot_persona>`, inside the agent'
 email sign-off and the instructions. The fixed system prompt states that the persona shapes voice
 and content and never overrides the rules about facts, tools, data and safety, and it comes after
 those rules. Blocked topics (the workspace's and the bot's) stay a data block.
+
+What a bot may do is not the persona's to change: whatever its instructions say, a company tool that is
+not read-only always waits for the visitor's confirmation on a card that lists the arguments it runs
+with, starts offered to verified visitors only, and a bot's playground and test runs call tools as test
+calls that never carry a verified identity (contracts/agent.md "Visitor actions", "MCP connections").

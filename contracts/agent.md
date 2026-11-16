@@ -40,6 +40,8 @@ Each reply is a tool-using model loop (at most 6 model turns per reply) with:
 - the conversation: the latest 30 public messages (12,000 characters);
 - the top 6 passages for the visitor's latest messages from published KB articles **and** ready
   knowledge sources (below), retrieved up front (embeddings, FTS fallback, the looser draft threshold).
+  The prompt tells the agent that a passage of kind `page` (a crawled website, where anyone may have
+  written) is for facts only, never a reason to call a tool, change anything or hand off.
   KB articles are the conversation's brand's and the shared ones (contracts/teams.md: an article takes
   its collection's brand); knowledge sources are workspace-wide. Tickets are never a source;
 - the bot's personality (contracts/bots.md "The prompt": name, role, tone, reply length, emoji use,
@@ -117,14 +119,20 @@ and are never replayed.
 
 ## Visitor actions (confirm before acting)
 
-An MCP tool whose policy is `confirm` is never run by the model alone. When the agent calls it, the
-loop stops and the reply is posted with an action card the visitor confirms or declines:
+An MCP tool whose policy is `confirm`, and every tool that is not read-only (whatever was stored: the
+conversation holds the visitor's own words), is never run by the model alone. When the agent calls it,
+the loop stops and the reply is posted with an action card the visitor confirms or declines:
 
 ```ts
 // On Message (contracts/api.md), public, set only on the agent's messages that carry one:
 ai_action: { id: string; title: string /* from the tool's title, else its name */; summary: string /* the agent's one-line description of what will happen */;
-  status: "pending" | "confirmed" | "declined" | "expired" | "failed"; tool: string /* display name */ } | null
+  status: "pending" | "confirmed" | "declined" | "expired" | "failed"; tool: string /* display name */;
+  fields?: { label: string /* the schema's title, else the argument's name */; value: string /* at most 300 chars */ }[] /* the arguments the tool runs with, from the call itself, at most 12, by name */;
+  omitted?: number /* arguments past the first 12 */ } | null
 ```
+
+The card shows `fields` beside the summary, so what the visitor confirms is what runs, whatever the
+agent's summary says. Numbers keep their exact text.
 
 - `POST /v1/widget/conversations/{id}/actions/{action_id}` (visitor auth) `{decision: "confirm" |
   "decline"}` → `204`. It claims the pending action atomically (`409 action_not_pending` after;
@@ -132,8 +140,9 @@ ai_action: { id: string; title: string /* from the tool's title, else its name *
   stored arguments, then the agent continues with the result as a new reply; decline continues with
   "the visitor declined". Either way the action's message is updated (`message.updated`, public, on
   the contact topic too) with the new status. Audit `ai.action` (tool and status, not arguments).
-- Arguments are stored encrypted (`d.Box`) in `ai_widget_actions` and never shown to the visitor
-  beyond the summary.
+  The confirmed call carries `_meta["opendesk/idempotency_key"] = "widget-action-<action id>"`.
+- Arguments are stored encrypted (`d.Box`) in `ai_widget_actions`; the visitor sees them only as the
+  card's `fields`.
 
 ## Ratings
 
@@ -147,7 +156,7 @@ topic too).
 
 ```ts
 widget_blocked_topics: string[]   // at most 20, each 2..100 chars of plain text: topics the agent declines
-widget_monthly_cap_usd: number    // US dollars of AI usage per calendar month (UTC) the agent may use (features answer, answer_email, answer_check, agent tools); 0 = no cap; 0..10,000, rounded to cents
+widget_monthly_cap_usd: number    // US dollars of AI usage per calendar month (UTC) the agent may use (features answer, answer_email, answer_check, agent tools); default 100 until set; 0 = no cap (an explicit choice); 0..10,000, rounded to cents
 widget_collect_email: boolean     // when the visitor has no email, the agent asks for one before handing off, default true
 ```
 
@@ -170,10 +179,12 @@ the team takes over) and sends one notification `ai_cap_reached` per month to ow
 
 It answers `text/event-stream`: `delta {text}`, `tool {name, status: "running" | "done" | "error",
 summary}`, `sources {sources: Source[]}`, then `done {text_html, sources, handoff: boolean, action:
-{tool, title, summary} | null, procedures: {id, name}[] /* the procedures it read */, usd: number /* what the reply cost, in US dollars */}`, or `error` (problem JSON).
+{tool, title, summary, fields, omitted?} | null, procedures: {id, name}[] /* the procedures it read */, usd: number /* what the reply cost, in US dollars */}`, or `error` (problem JSON).
 The playground answers in the `chat` channel as its bot, with the saved procedures (drafts of
-procedures are not taken). Read-only MCP tools run
-for real (with the given visitor in `_meta`); any other tool is not run and comes back as `action`.
+procedures are not taken). Read-only MCP tools run for real as test calls: `_meta` carries
+`"opendesk/test": true` and `opendesk/visitor` with `verified: false` and the given name only, never a
+user id or email; the given `verified` only decides which tools are offered. Any other tool is not run
+and comes back as `action`. Agent test runs ("Tests") call tools the same way.
 Metered as feature `playground` (about $0.03 per reply on the default model, counted toward nothing else).
 Rate limited to 30 per user per minute.
 
@@ -463,10 +474,11 @@ interface McpTool {
   name: string; title: string | null; description: string /* up to 1,000 chars shown */
   input_schema: Record<string, unknown>
   read_only: boolean             // from annotations.readOnlyHint
-  destructive: boolean           // annotations.destructiveHint
+  destructive: boolean           // annotations.destructiveHint (true when absent, for a tool that is not read-only)
   enabled: boolean               // default: true for read-only tools, false otherwise
-  policy: "auto" | "confirm"     // default: auto for read-only tools, confirm otherwise
-  verified_only: boolean         // offered only in verified widget sessions, default false
+  policy: "auto" | "confirm"     // default: auto for read-only tools; always confirm for any other tool (a PATCH setting auto on one is 422 confirm_required)
+  verified_only: boolean         // offered only in verified widget sessions; default true for tools that are not read-only, false otherwise
+  usable: boolean                // the agent can be offered it: [a-zA-Z0-9_-] name and <server_slug>__<tool> at most 64 characters
 }
 ```
 
@@ -479,7 +491,7 @@ interface McpTool {
 | POST | `/v1/ai/mcp-servers/{id}/sync` | → `McpServer` (reconnect, list tools again; tool settings are kept by name) |
 | POST | `/v1/ai/mcp-servers/{id}/oauth/start` | → `{url}`: the authorization URL (browser redirect) |
 | GET | `/v1/ai/mcp-servers/oauth/callback` | `?state&code` → 302 `APP_URL/settings/ai/tools?connected=<id>` or `?error=<code>` |
-| POST | `/v1/ai/mcp-servers/{id}/tools/{name}/test` | `{arguments: object, visitor?: {...}}` → `{content: string, is_error: boolean, ms: number}` (runs the tool once, any policy) |
+| POST | `/v1/ai/mcp-servers/{id}/tools/{name}/test` | `{arguments: object, confirm?: boolean, visitor?: {name?}}` → `{content: string, is_error: boolean, ms: number}` (runs the tool once as a test call: `_meta` carries `"opendesk/test": true` and `verified: false`, never a user id or email, whatever the body says; a tool that needs confirmation, not read-only or policy `confirm`, runs only for a person who sends `confirm: true`: `409 confirm_required` without it, `403` for an API key) |
 
 - Secrets (bearer token, header value, OAuth client secret, access and refresh tokens) are encrypted
   with `d.Box` and never returned. `header_name` must be a valid token and not a hop-by-hop or
@@ -496,9 +508,16 @@ interface McpTool {
   tool output given to the model is the text content, truncated to 8,000 characters, inside a
   `<tool_output>` data block.
 - Each tool call sends `_meta: {"opendesk/visitor": {verified, user_id?, email?, name?, contact_id,
-  conversation_id}, "opendesk/workspace": {id, name}}`. Only `verified: true` sessions carry
-  `user_id`/`email` from the verified identity; MCP servers should trust identity only from there,
-  never from tool arguments. Tools with `verified_only` are not offered in unverified sessions.
+  conversation_id}, "opendesk/workspace": {id, name}, "opendesk/test"?: true, "opendesk/idempotency_key"?:
+  string}`. Only `verified: true` sessions carry `user_id`/`email` from the verified identity; MCP servers
+  should trust identity only from there, never from tool arguments. A call from the playground, an agent
+  test run or the test route carries `"opendesk/test": true` and is never `verified`. A confirmed action
+  carries its idempotency key on every attempt. Tools with `verified_only` are not offered in unverified
+  sessions.
+- Connections are pooled per server and shared by every conversation of the workspace: a server must not
+  keep per-visitor state in its MCP session (a "signed in" flag, a cart); it identifies the visitor from
+  `_meta` on each call. A call is retried on a new connection only when it cannot have run (credentials
+  refused, session gone); a read-only tool also when the connection closed, a write never then.
 - Changes are audit-logged (`ai.mcp_server_created`, `_updated`, `_deleted`, `_connected`,
   `_disconnected`; never secrets) and publish `ai_mcp_server.created` / `.updated` / `.deleted`
   (agents, data `{mcp_server: McpServer}` / `{mcp_server_id}`).

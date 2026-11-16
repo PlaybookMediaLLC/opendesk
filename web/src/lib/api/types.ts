@@ -2808,6 +2808,8 @@ export type McpTool = {
   enabled: boolean;
   policy: "auto" | "confirm";
   verified_only: boolean;
+  /** The agent can be offered the tool (its name fits <server_slug>__<tool>, 64 characters). */
+  usable: boolean;
 };
 export type McpServerStatus = "connected" | "needs_auth" | "error" | "connecting";
 export type McpServer = {

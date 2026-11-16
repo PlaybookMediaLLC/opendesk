@@ -243,6 +243,24 @@ func (s *Service) catalog() string {
 var apiClosed = []string{"/v1/admin", "/v1/auth", "/v1/assistant", "/v1/me/assistant-peer", "/v1/public", "/v1/push", "/v1/oauth", "/v1/realtime",
 	"/v1/inbound", "/v1/widget/session", "/v1/widget/conversations", "/v1/widget/attachments", "/v1/widget/config"}
 
+// apiOpen are the API's areas the tools reach, by the path's first segment after /v1/. A
+// route under any other segment is out of reach until it is added here, so a new area is
+// never open to Ollie by default; apiClosed and apiNoWrite then close parts of these.
+var apiOpen = map[string]bool{
+	"ai": true, "ai-clients": true, "api-keys": true, "articles": true, "assignment": true, "attachments": true, "audit-logs": true,
+	"automations": true, "bots": true, "brands": true, "business-hours": true, "changelog": true, "collab": true, "collections": true,
+	"companies": true, "contacts": true, "custom-fields": true, "email-templates": true, "events": true, "imports": true,
+	"integrations": true, "invitations": true, "kb": true, "mailboxes": true, "me": true, "members": true, "messages": true,
+	"notifications": true, "onboarding": true, "phone": true, "reports": true, "routing": true, "routing-rules": true,
+	"saved-replies": true, "search": true, "sidebar": true, "skills": true, "sla-policies": true, "spaces": true,
+	"support-channels": true, "tag-groups": true, "tags": true, "teams": true, "templates": true, "ticket-panels": true,
+	"tickets": true, "triage": true, "view-sections": true, "views": true, "webhooks": true, "widget": true, "widgets": true,
+	"wiki": true, "workspace": true,
+}
+
+// apiPrivateRead are reads that stay with the person: their sign-ins, devices and keys.
+var apiPrivateRead = regexp.MustCompile(`^/v1/me/(sessions|devices|passkeys|web-push|support-channel-link-code)(/|$)`)
+
 // Writes that stay with the person: credentials, sessions and devices, money, owner-only
 // operations, and messages to customers (draft_reply shows those as such). An empty
 // method closes every write to the path.
@@ -279,13 +297,17 @@ var apiExternal = []*regexp.Regexp{
 var secretKey = regexp.MustCompile(`(?i)(secret|token|password|passwd|api_?key|private_?key|credential)`)
 
 func reachable(method, path string) bool {
+	seg, _, _ := strings.Cut(strings.TrimPrefix(path, "/v1/"), "/")
+	if !strings.HasPrefix(path, "/v1/") || !apiOpen[seg] {
+		return false
+	}
 	for _, p := range apiClosed {
 		if path == p || strings.HasPrefix(path, p+"/") {
 			return false
 		}
 	}
 	if method == http.MethodGet {
-		return true
+		return !apiPrivateRead.MatchString(path)
 	}
 	for _, c := range apiNoWrite {
 		if (c.method == "" || c.method == method) && c.re.MatchString(path) {

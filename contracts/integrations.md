@@ -25,7 +25,12 @@ interface ToolInfo { name: string; title: string; description: string;
   read_only: boolean /* runs without approval: read_only_hint and not ask_first */;
   read_only_hint: boolean /* the server marks it read-only (its readOnlyHint) */;
   ask_first: boolean /* an admin set it to wait for approval */;
-  auto_run: boolean /* a write that runs without the user's approval: on auto_tools, not read-only, not ask_first */; enabled: boolean }
+  auto_run: boolean /* a write that runs without the user's approval: on auto_tools, not read-only, not ask_first, may_auto_run */;
+  may_auto_run: boolean /* a write its server marks destructiveHint: false and openWorldHint: false; only such a write can run without asking */;
+  destructive: boolean /* a write whose destructiveHint is true or absent (the MCP default) */;
+  open_world: boolean /* openWorldHint true or absent (the MCP default): calls may reach people or systems outside the workspace */;
+  enabled: boolean;
+  withheld: boolean /* GET /v1/integrations only: enabled and connected, but past the 120 connected tools offered in one run */ }
 interface Link { id: string; ticket_id: string; integration_id: string | null; provider: string /* key, custom or link */;
   url: string; title: string; external_id: string | null;
   external_state: "backlog"|"todo"|"in_progress"|"done"|"canceled" | null;
@@ -114,12 +119,15 @@ current icon. A new icon publishes `integration.updated`.
 ## Ollie
 
 Connected tools are offered to Ollie (agent role and up) as `<slug>__<tool>` (at most 64
-characters), with the integration's name leading the description; at most 120 per run.
+characters), with the integration's name leading the description; at most 120 per run, in the order
+of the connections and their tools (settings marks the rest `withheld`, and the server logs their count).
 Tools turned off in settings are neither offered nor run. `disabled_tools`, `ask_tools` and
 `auto_tools` keep only names of the connection's tools, and outlast a sync.
 
 - A tool its server marks `readOnlyHint` runs as a read, unless an admin set it to ask first
-  (`ask_tools`; the server's hint stays visible as `read_only_hint`). Everything else is a
+  (`ask_tools`; the server's hint stays visible as `read_only_hint`), or the conversation holds text from
+  outside the workspace (`contracts/ai.md` "Approvals"): then every connected call, reads included, is
+  proposed and waits for the user's approval. Everything else is a
   write: it is proposed with a `Preview` (`system` names the integration, `changes` lists up
   to 12 arguments, long text in `body`) and runs only after the user approves. The preview's
   `arguments` is the complete call as it is sent, indented; `omitted` counts the arguments
@@ -128,22 +136,30 @@ Tools turned off in settings are neither offered nor run. `disabled_tools`, `ask
   as their own text, so the approved call sends exactly what the preview showed.
 - Whether a tool may run without approval is checked again when it runs: a call made as a
   read is refused once the tool is turned off or set to ask first.
+- Annotations: `destructiveHint` and `openWorldHint` are stored as the server sends them; absent, both
+  count as true (the MCP defaults). A connected write's preview is `external` (it reaches outside the
+  workspace) unless its server marks it `openWorldHint: false`.
 - Runs without asking: a write on `auto_tools` runs as soon as Ollie proposes it, on the path of an
   approved change (`contracts/ai.md` "Approvals": an `assistant_actions` row with `auto`, the
-  `assistant.action` audit entry with `data.auto = true`). Only a write counts: a tool that is
-  read-only needs no approval anyway, and `ask_tools` wins over `auto_tools` for a tool on both.
-  A change whose preview reaches someone outside (`external`) still asks. Whether it may run so is
-  checked again just before it runs, and the call itself is refused once it no longer may.
+  `assistant.action` audit entry with `data.auto = true`), only while its server marks it
+  `destructiveHint: false` and `openWorldHint: false` (`may_auto_run`); any other write asks whatever
+  `auto_tools` says, and nothing runs without asking in a conversation with outside text. Only a write
+  counts: a tool that is read-only needs no approval anyway, and `ask_tools` wins over `auto_tools` for a
+  tool on both. Whether it may run so is checked again just before it runs, and the call itself is refused
+  once it no longer may.
+- Every approved or auto call carries `_meta: {"opendesk/idempotency_key": "assistant-<action id>"}` on
+  each attempt (a retry after the server asked for a new session or new credentials sends the same key),
+  so a server can recognise a repeated write.
 - Results and errors from a server reach the model inside `<tool_output>` data blocks.
 - A write made from a ticket (the page context) whose name reads as creating something,
   and whose result has a link on the provider's hosts, is linked back to the ticket
   (`POST /v1/tickets/{id}/links`, attributed `ai` for the user). The step's `refs` carry
   `{kind: "external", id: <url>}`.
 - A draft reply (`contracts/ai.md` "Drafts and connected tools") calls reads only (`CallRead`), before
-  it is written.
-- A procedure an automation runs (`contracts/ai.md` "Automations") calls reads, and writes on
-  `auto_tools` only (`CallAuto`); a create-style write's link on the provider's hosts is linked to its
-  ticket the same way, `actor_type: "ai"` with no user.
+  it is written, and only on a thread the team alone wrote.
+- A procedure an automation runs (`contracts/ai.md` "Automations") calls no connected tool: its context
+  holds the customer's text and nobody approves there. Writes on `auto_tools` are offered to be suggested:
+  their exact arguments go to the team in an internal note, for a person to make.
 
 ## Events
 
