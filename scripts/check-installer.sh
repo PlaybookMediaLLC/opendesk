@@ -90,13 +90,14 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
 fi
 before=$(grep -E '^(AUTH_SECRET|CREDENTIALS_KEY|SECRET_KEY_BASE|NATS_TOKEN|INBOUND_SECRET|POSTGRES_PASSWORD)=' "$work/inst/.env")
 echo "MY_SETTING=kept" >>"$work/inst/.env"
-sed -i.orig 's/^SIGNUP_ENABLED=.*/SIGNUP_ENABLED=false/' "$work/inst/.env"
+grep -qx 'SIGNUP_ENABLED=false' "$work/inst/.env" || fail "a fresh install leaves sign-up open"
+sed -i.orig 's/^SIGNUP_ENABLED=.*/SIGNUP_ENABLED=true/' "$work/inst/.env"
 sh "$SCRIPT" --yes --no-start --no-color --version v0.0.0-test2 --dir "$work/inst" >/dev/null </dev/null ||
   fail "a second install failed"
 after=$(grep -E '^(AUTH_SECRET|CREDENTIALS_KEY|SECRET_KEY_BASE|NATS_TOKEN|INBOUND_SECRET|POSTGRES_PASSWORD)=' "$work/inst/.env")
 [[ $before == "$after" ]] || fail "a second run changed a secret"
 grep -qx 'MY_SETTING=kept' "$work/inst/.env" || fail "a second run dropped a setting it does not own"
-grep -qx 'SIGNUP_ENABLED=false' "$work/inst/.env" || fail "a second run reset an operator's setting"
+grep -qx 'SIGNUP_ENABLED=true' "$work/inst/.env" || fail "a second run reset an operator's setting"
 grep -qx 'OPENDESK_DOMAIN=localhost' "$work/inst/.env" || fail "a second run forgot the domain"
 grep -qx 'OPENDESK_VERSION=v0.0.0-test2' "$work/inst/.env" || fail "--version did not move the pin"
 pass "a second run keeps secrets and settings and moves the version pin"

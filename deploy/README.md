@@ -740,8 +740,11 @@ less install.sh && sh install.sh
 ```
 
 After installing, sign up at your domain: the first account owns the
-workspace. Then set `SIGNUP_ENABLED=false` in `.env` if the instance is
-private, and `docker compose up -d`.
+workspace. Sign-up is closed after that (`SIGNUP_ENABLED=false`): others join
+by invitation. Set `SIGNUP_ENABLED=true` in `.env` and `docker compose up -d`
+only if anyone on the internet should be able to create a workspace, and then
+consider `MAILBOX_SYSTEM_SEND=false`, so workspaces send through their own mail
+servers rather than yours.
 
 What runs:
 
@@ -901,7 +904,8 @@ available to every workspace, and Google and Microsoft mailboxes can read the
 inbox directly through their APIs with the Collab clients; turn `COLLAB_IMAP`
 off too to receive by forwarding only.
 
-**Sending through opendesk.** On by default (`MAILBOX_SYSTEM_SEND=true`): a
+**Sending through opendesk.** On by default (`MAILBOX_SYSTEM_SEND=true`), for a
+workspace one of whose owners or admins has confirmed their email address: a
 mailbox without its own way to send can send replies through the platform email
 (`MAIL_DRIVER`), from `MAIL_FROM` with the mailbox's name. `MAILBOX_SYSTEM_SEND=false`
 makes every mailbox send through Google, Microsoft or SMTP, as opendesk Cloud

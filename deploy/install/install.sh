@@ -450,7 +450,9 @@ wizard() {
     esac
 
     step "Sign-ups"
-    if confirm "Allow anyone to sign up? (Close it after you create your account)" yes; then
+    note "Your account, the first, can always sign up. After that, only people you invite can,"
+    note "unless you open sign-up to anyone on the internet."
+    if confirm "Let anyone sign up and create a workspace?" no; then
         SIGNUP=true
     else
         SIGNUP=false

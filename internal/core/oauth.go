@@ -564,8 +564,18 @@ func (s *svc) resolveIdentity(ctx context.Context, id *fedIdentity, redirectTo, 
 					return err
 				}
 				if !invited {
-					errCode = "signup_disabled"
-					return nil
+					// The instance's first account registers while sign-up is closed.
+					if err := lockFirstAccount(ctx, tx); err != nil {
+						return err
+					}
+					first, err := firstAccount(ctx, tx)
+					if err != nil {
+						return err
+					}
+					if !first {
+						errCode = "signup_disabled"
+						return nil
+					}
 				}
 			}
 			uid = ids.New()

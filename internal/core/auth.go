@@ -44,6 +44,32 @@ func errInvalidCredentials() *httpx.Error {
 // errEmailTaken answers a sign-up with an address that has an account.
 var errEmailTaken = httpx.E(409, "email_taken", "An account with this email already exists. Sign in instead.")
 
+var errSignupClosed = httpx.E(403, "signup_disabled", "Sign up is by invitation only on this instance.")
+
+// firstAccount reports an instance nobody has signed up to yet. With sign-up closed
+// (SIGNUP_ENABLED=false, the self-host default) its first account, the owner, may still
+// register, and sign-up is closed from then on.
+func firstAccount(ctx context.Context, q db.Querier) (bool, error) {
+	var anyone bool
+	err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM users)`).Scan(&anyone)
+	return !anyone, err
+}
+
+// lockFirstAccount serializes first sign-ups on a closed instance, so exactly one of two at
+// once is the first account; firstAccount in the same transaction then sees the other.
+func lockFirstAccount(ctx context.Context, tx pgx.Tx) error {
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('first_account', 0))`)
+	return err
+}
+
+// signupOpen: anyone may register (SIGNUP_ENABLED), or nobody has yet.
+func (s *svc) signupOpen(ctx context.Context) (bool, error) {
+	if s.d.Cfg.SignupEnabled {
+		return true, nil
+	}
+	return firstAccount(ctx, s.d.DB.Pool)
+}
+
 func errInvalidToken() *httpx.Error {
 	return httpx.E(400, "invalid_token", "This link is invalid or has expired.")
 }
@@ -98,7 +124,11 @@ func (s *svc) registerAuth(api huma.API) {
 	register(s, api, huma.Operation{OperationID: "auth-config", Method: http.MethodGet, Path: "/v1/auth/config",
 		Summary: "Sign-in options", Tags: tags, Security: []map[string][]string{}},
 		func(ctx context.Context, _ *struct{}) (*struct{ Body coreAuthConfig }, error) {
-			c := coreAuthConfig{Providers: []coreAuthProvider{}, PasswordLogin: true, SignupEnabled: s.d.Cfg.SignupEnabled,
+			open, err := s.signupOpen(ctx)
+			if err != nil {
+				return nil, httpx.Wrap(err)
+			}
+			c := coreAuthConfig{Providers: []coreAuthProvider{}, PasswordLogin: true, SignupEnabled: open,
 				Passkeys: s.webauthn != nil}
 			for _, p := range s.oauth.list {
 				c.Providers = append(c.Providers, coreAuthProvider{ID: p.id, Name: p.name})
@@ -393,8 +423,14 @@ func (s *svc) handleRegister(ctx context.Context, in *coreRegisterBody) (*authOu
 		invited = err == nil && invEmail == email
 		proven = invited && !copied
 	}
-	if !s.d.Cfg.SignupEnabled && !invited {
-		return nil, httpx.E(403, "signup_disabled", "Sign up is by invitation only on this instance.")
+	if !invited {
+		open, err := s.signupOpen(ctx)
+		if err != nil {
+			return nil, httpx.Wrap(err)
+		}
+		if !open {
+			return nil, errSignupClosed
+		}
 	}
 	hash, err := auth.HashPassword(in.Password)
 	if err != nil {
@@ -403,6 +439,16 @@ func (s *svc) handleRegister(ctx context.Context, in *coreRegisterBody) (*authOu
 	var out *authOut
 	uid := ids.New()
 	err = s.tx(ctx, func(tx pgx.Tx) error {
+		if !s.d.Cfg.SignupEnabled && !invited {
+			if err := lockFirstAccount(ctx, tx); err != nil {
+				return err
+			}
+			if first, err := firstAccount(ctx, tx); err != nil {
+				return err
+			} else if !first {
+				return errSignupClosed
+			}
+		}
 		var verified *time.Time
 		if proven {
 			verified = ptr(time.Now())
