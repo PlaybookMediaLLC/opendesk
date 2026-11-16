@@ -112,8 +112,10 @@ func TestAskTeammateGates(t *testing.T) {
 	e.Exec(`INSERT INTO team_members (team_id, user_id, role) VALUES ($1, $2, 'member')`, team, e.WS.Agent.ID)
 	e.putPeer(e.WS.Admin, peerBody(map[string]any{"share_with": "chosen",
 		"audience": map[string]any{"user_ids": []string{}, "team_ids": []string{team.String()}}})).Want(t, 200)
-	st, calls = e.ask("When is the Acme renewal?", `{"answer": "The renewal is in mid March, after they see the new prices.", "declined": false, "sources_used": 1}`)
-	if st.Peer == nil || st.Peer.Result != peerAnswered || st.Peer.Sources != 1 || calls != 3 || st.Peer.User.ID != e.WS.Admin.ID {
+	// Summaries only (the default): the answer is restated by a second step that never sees the mail.
+	st, calls = e.ask("When is the Acme renewal?", `{"answer": "The renewal is in mid March, after they see the new prices.", "declined": false, "sources_used": 1}`,
+		`{"answer": "The renewal is in mid March, after they see the new prices."}`)
+	if st.Peer == nil || st.Peer.Result != peerAnswered || st.Peer.Sources != 1 || calls != 4 || st.Peer.User.ID != e.WS.Admin.ID {
 		t.Fatalf("answered: %+v, %d model calls", st, calls)
 	}
 	// The asker's Ollie got the answer, marked as the teammate's, inside a data block.
@@ -121,9 +123,10 @@ func TestAskTeammateGates(t *testing.T) {
 	if !strings.Contains(string(raw), "mid March") || !strings.Contains(string(raw), `from=\"`+e.WS.Admin.Name+`'s Ollie\"`) {
 		t.Fatalf("answer not passed on with its provenance: %s", raw)
 	}
-	// The teammate's Ollie saw the mail, never the asker's Ollie.
-	peerReq, _ := json.Marshal(e.M.reqs[len(e.M.reqs)-2]["messages"])
-	if !strings.Contains(string(peerReq), "March 14") || strings.Contains(string(raw), "March 14") {
+	// The teammate's Ollie saw the mail, never the restating step or the asker's Ollie.
+	peerReq, _ := json.Marshal(e.M.reqs[len(e.M.reqs)-3]["messages"])
+	restateReq, _ := json.Marshal(e.M.reqs[len(e.M.reqs)-2]["messages"])
+	if !strings.Contains(string(peerReq), "March 14") || strings.Contains(string(raw), "March 14") || strings.Contains(string(restateReq), "March 14") {
 		t.Fatal("mail went to the wrong model")
 	}
 	if strings.Contains(string(peerReq), "dana@customer.test") {
@@ -131,7 +134,7 @@ func TestAskTeammateGates(t *testing.T) {
 	}
 	// Paid by the workspace, attributed to the asker.
 	e.Scalar(`SELECT count(*) FROM ai_usage WHERE workspace_id = $1 AND feature = 'assistant_peer' AND user_id = $2`, &n, e.WS.ID, e.WS.Agent.ID)
-	if n != 1 {
+	if n != 2 {
 		t.Fatalf("usage rows %d", n)
 	}
 	// The admin's log has both asks made after opting in; the audit has no content.
@@ -167,10 +170,12 @@ func TestAskTeammateSummaryIsNotCopied(t *testing.T) {
 	e.mail(acct, "Acme renewal", text)
 	e.putPeer(e.WS.Admin, peerBody(nil)).Want(t, 200)
 	copied := `{"answer": "` + text + `.", "declined": false, "sources_used": 1}`
+	// The restating step copies too, here with dashes between the letters.
+	spelled := `{"answer": "` + strings.Join(strings.Split(text, ""), "-") + `"}`
 
 	// Summaries only: a copied answer is asked again, then declined.
-	st, calls := e.ask("When is the Acme renewal?", copied, copied)
-	if st.Peer == nil || st.Peer.Result != peerDeclined || calls != 4 {
+	st, calls := e.ask("When is the Acme renewal?", copied, spelled, copied, spelled)
+	if st.Peer == nil || st.Peer.Result != peerDeclined || calls != 6 {
 		t.Fatalf("copy of a summary: %+v, %d model calls", st, calls)
 	}
 	raw, _ := json.Marshal(e.M.last()["messages"])
@@ -179,7 +184,7 @@ func TestAskTeammateSummaryIsNotCopied(t *testing.T) {
 	}
 	var n int
 	e.Scalar(`SELECT count(*) FROM ai_usage WHERE workspace_id = $1 AND feature = 'assistant_peer' AND user_id = $2`, &n, e.WS.ID, e.WS.Agent.ID)
-	if n != 2 {
+	if n != 4 {
 		t.Fatalf("usage rows %d", n)
 	}
 
@@ -271,13 +276,35 @@ func TestCopiesSummary(t *testing.T) {
 		want               bool
 	}{
 		{"summary", "one two three four five six seven eight nine ten eleven twelve thirteen", "So: One two three four five six seven eight nine ten eleven twelve.", true},
-		{"summary", "one two three four five six seven eight nine ten eleven twelve thirteen", "one two three four five six seven eight nine ten eleven", false},
+		{"summary", "one two three four five six seven eight nine ten eleven twelve thirteen", "one two three four five six seven", false},
 		{"verbatim", "one two three four five six seven eight nine ten eleven twelve thirteen", "one two three four five six seven eight nine ten eleven twelve", false},
 	}
 	for _, c := range ex {
 		if got := copiesSummary(c.answer, []collab.PeerExcerpt{{Subject: "Subject", Mode: c.mode, Text: c.text}}); got != c.want {
 			t.Errorf("%s %q: %v", c.mode, c.answer, got)
 		}
+	}
+}
+
+func TestCopiesSummaryWhateverSeparatesTheLetters(t *testing.T) {
+	text := "Acme confirmed that the renewal will be signed on the fourteenth of March once legal approves"
+	ex := []collab.PeerExcerpt{{Subject: "Renewal", Mode: collab.PeerSummary, Text: text}}
+	spelled := strings.Join(strings.Split(strings.ToUpper(text), ""), "-")
+	if !copiesSummary(spelled, ex) {
+		t.Fatal("a dash-spelled copy passed")
+	}
+	if copiesSummary("They plan to sign in mid March, after legal looks at the pricing.", ex) {
+		t.Fatal("a summary in other words was refused")
+	}
+	if copiesSummary(spelled, []collab.PeerExcerpt{{Subject: "Renewal", Mode: collab.PeerVerbatim, Text: text}}) {
+		t.Fatal("a verbatim source was checked")
+	}
+}
+
+func TestCutQuotes(t *testing.T) {
+	got := cutQuotes(`She wrote "the renewal will be signed on the fourteenth of March" and "OK then".`)
+	if got != `She wrote […] and "OK then".` {
+		t.Fatalf("cutQuotes = %q", got)
 	}
 }
 
