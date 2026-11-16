@@ -186,7 +186,7 @@ func TestSLABreachRecordedAtSolve(t *testing.T) {
 // ticket_updated automations run when a field of their conditions changed, not on every
 // edit; changed holds for the field the update changed.
 func TestTicketUpdatedAutomationsRunOnTheirFields(t *testing.T) {
-	e, ws := newEnv(t)
+	e, ws := newFullEnv(t) // the automations routes, for the save checks
 	solved := addAutomation(t, e, ws, jobs.TriggerTicketUpdated, 0,
 		[]map[string]string{{"field": "status", "op": "equals", "value": "solved"}},
 		[]map[string]string{{"type": "add_note", "value": "<p>Solved</p>"}})
