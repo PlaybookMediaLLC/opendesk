@@ -22,8 +22,9 @@ import (
 )
 
 // Actions on conversations (contracts/collab.md "Actions"): applied at once in opendesk
-// (applyLocal), then at the provider by collab.apply, then a sync brings the provider's
-// state back, which also undoes an action the provider refused for good.
+// (applyLocal), then at the provider by collab.apply on the messages they changed, then a
+// sync brings the provider's state back. An action the provider refused for good has its
+// messages read back from the provider (readBack).
 //
 // Which messages an action touches:
 //   - read, unstar: every message; unread, star: the newest message of each conversation.
