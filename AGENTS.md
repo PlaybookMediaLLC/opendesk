@@ -83,6 +83,18 @@ Self-hosted = `opendesk` + `realtime` + `postgres` behind Caddy on one domain: `
   below the highest on main or in the last release, in CI and before a release. The first
   build used per-area ranges: core `0001xx`, email `0002xx`, helpdesk `0003xx`, billing
   `0004xx`, ai `0005xx`; those are closed.
+- Migrations on large tables never block writes for long. An index on one of them (tickets,
+  messages, activities, events, audit_logs, contacts, ...; `LARGE_TABLES` in
+  `scripts/check-migrations.sh`) is `CREATE INDEX CONCURRENTLY IF NOT EXISTS`, alone in its
+  migration, with `DROP INDEX CONCURRENTLY IF EXISTS` in its down: golang-migrate sends each
+  file as one query, and Postgres runs a file of one statement outside a transaction. The
+  script refuses, from 000760 on, a blocking index on such a table and a CONCURRENTLY statement
+  beside others; a migration that needs one in a transaction on purpose says why in a
+  `-- check-migrations: blocking index:` comment. Migrations run in one process (the cloud's
+  migrate task, a self-host's single container), as a concurrent build waits for every other
+  transaction. A failed concurrent build leaves an invalid index and a dirty version: drop the
+  index, then `migrate force` the previous version. Backfills of large tables go in batches
+  in a job, not in the migration.
 - Run `gofmt -w` on touched files, then `go build ./... && go vet ./...`.
 
 ## Cloud and self-hosted

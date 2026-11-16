@@ -1,6 +1,8 @@
 -- A webhook receives each event once: one delivery row per (webhook, event). Earlier copies
--- of the same pair are folded into the oldest before the constraint is added. Deliveries
--- are kept 30 days and written only by the webhook queue, which waits for the build.
+-- of the same pair are folded into the oldest before the constraint is added.
+-- check-migrations: blocking index: the duplicates must go in the same transaction as the
+-- unique index is built, or one written between the two would fail the build. Deliveries are
+-- kept 30 days and written only by the webhook queue, which waits for the build.
 DELETE FROM webhook_deliveries d
 USING webhook_deliveries keep
 WHERE keep.webhook_id = d.webhook_id AND keep.event_id = d.event_id
