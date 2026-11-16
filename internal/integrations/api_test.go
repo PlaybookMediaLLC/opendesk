@@ -145,14 +145,17 @@ func TestConnectListUpdateDisconnect(t *testing.T) {
 	if !slices.Equal(autos, []string{"create_issue", "search_issues"}) {
 		t.Fatalf("auto_tools = %v", autos)
 	}
-	if !autoOf("create_issue").AutoRun || autoOf("search_issues").AutoRun {
+	// The fake server sends no destructiveHint or openWorldHint for create_issue, so it counts
+	// as destructive and open-world: on auto_tools it still asks (mcp_test.go covers a write
+	// its server marks harmless and closed-world, which runs without asking).
+	if c := autoOf("create_issue"); c.AutoRun || c.MayAutoRun || !c.Destructive || !c.OpenWorld || autoOf("search_issues").AutoRun {
 		t.Fatalf("auto run = %+v", upd.Tools)
 	}
-	if _, err := For(e.D).Call(e.Ctx, ws.ID, x.ID, "create_issue", json.RawMessage(`{}`), CallAuto); err != nil {
-		t.Fatalf("auto call: %v", err)
+	if _, err := For(e.D).Call(e.Ctx, ws.ID, x.ID, "create_issue", json.RawMessage(`{}`), CallAuto); err != ErrNeedsApproval {
+		t.Fatalf("auto call of an unannotated write = %v", err)
 	}
-	if ok, _ := For(e.D).AutoRun(e.Ctx, ws.ID, x.ID, "create_issue"); !ok {
-		t.Fatal("AutoRun = false")
+	if ok, _ := For(e.D).AutoRun(e.Ctx, ws.ID, x.ID, "create_issue"); ok {
+		t.Fatal("AutoRun of an unannotated write = true")
 	}
 	e.Do("PATCH", path, admin, map[string]any{"ask_tools": []string{"create_issue"}}).Want(t, 200).JSON(t, &upd)
 	if autoOf("create_issue").AutoRun {
