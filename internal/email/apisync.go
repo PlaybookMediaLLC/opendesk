@@ -301,6 +301,23 @@ func firstWindow(m *mailboxRow, first bool) time.Duration {
 	return initialWindow
 }
 
+// restartSlack is how far before a mailbox was created a round that starts over still
+// reads (the provider's clock is not ours).
+const restartSlack = 10 * time.Minute
+
+// restartWindow is how far back a round reads when the provider dropped the cursor (an
+// expired history id or delta link, a new UIDVALIDITY): the import window, but never past
+// the time a mailbox that starts with new mail only (sync_start new, as "Use for tickets"
+// sets) was created, so mail its address held before it became a mailbox never becomes
+// tickets.
+func restartWindow(m *mailboxRow, now time.Time) time.Duration {
+	w := initialWindow
+	if m.Config.SyncStart == SyncStartNew && !m.CreatedAt.IsZero() {
+		w = min(w, max(now.Sub(m.CreatedAt)+restartSlack, 0))
+	}
+	return w
+}
+
 // Gmail.
 
 func (s *service) gmailURL(path string) string { return s.gmailBase + "/gmail/v1/users/me" + path }
@@ -323,6 +340,7 @@ func (s *service) syncGmailInbox(ctx context.Context, m *mailboxRow, st *apiSync
 		}
 		s.log.Info("gmail history expired, reading the inbox again", "mailbox_id", m.ID)
 		st.HistoryID = ""
+		window = restartWindow(m, time.Now())
 	}
 	// The history id is read first so nothing that arrives during the import is missed.
 	var prof struct {
@@ -473,7 +491,7 @@ func (s *service) syncGraphInbox(ctx context.Context, m *mailboxRow, st *apiSync
 	}
 	s.log.Info("graph delta expired, reading the inbox again", "mailbox_id", m.ID)
 	*st = apiSyncState{Account: st.Account, LabelID: st.LabelID, LabelAccount: st.LabelAccount}
-	return s.graphInboxDelta(ctx, m, st, initialWindow)
+	return s.graphInboxDelta(ctx, m, st, restartWindow(m, time.Now()))
 }
 
 // graphInboxDelta reads one pass of the delta; a new round reads back window.

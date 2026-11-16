@@ -8,6 +8,7 @@ import (
 	"net/mail"
 	"path"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -230,6 +231,8 @@ var (
 	dsnStatusRe    = regexp.MustCompile(`(?im)^status:\s*([245]\.\d{1,3}\.\d{1,3})`)
 	dsnDiagRe      = regexp.MustCompile(`(?im)^diagnostic-code:\s*(?:smtp;\s*)?(.+)$`)
 	dsnRecipientRe = regexp.MustCompile(`(?im)^final-recipient:\s*(?:rfc822;\s*)?(\S+)`)
+	// dsnRecipientsRe reads every recipient field of a report.
+	dsnRecipientsRe = regexp.MustCompile(`(?im)^(?:final|original)-recipient:\s*(?:rfc822;\s*)?(\S+)`)
 )
 
 // bounceRefs lists the Message-IDs a bounce refers to: its threading headers plus any
@@ -250,6 +253,19 @@ func bounceRefs(pm *parsedMail, raw []byte) []string {
 		ids = append(ids, string(m))
 	}
 	return msgIDList(strings.Join(ids, " "))
+}
+
+// bounceRecipients are the recipients a delivery report says delivery failed for (its
+// Final-Recipient and Original-Recipient fields), lower case.
+func bounceRecipients(raw []byte) []string {
+	out := []string{}
+	for _, m := range dsnRecipientsRe.FindAllSubmatch(raw, 50) {
+		a := strings.ToLower(strings.Trim(strings.TrimSpace(string(m[1])), "<>"))
+		if a != "" && !slices.Contains(out, a) {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // bounceDetail is a short, safe description of why delivery failed.

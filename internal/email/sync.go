@@ -212,7 +212,7 @@ func (s *service) syncFolder(ctx context.Context, c *imapclient.Client, m *mailb
 		if err != nil {
 			return fail(opError("listing messages", err))
 		}
-		since := time.Now().Add(-initialWindow)
+		since := time.Now().Add(-restartWindow(m, time.Now()))
 		for _, msg := range msgs {
 			if msg.InternalDate.IsZero() || !msg.InternalDate.Before(since) {
 				cands = append(cands, candidate{uid: uint32(msg.UID), size: msg.RFC822Size})

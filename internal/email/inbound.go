@@ -25,9 +25,12 @@ import (
 )
 
 // InboundSignatureHeader authenticates a message posted by the Cloudflare Email Worker
-// (or another relay): "t=<unix seconds>,v1=<hex HMAC-SHA256>" over
-// "<t>.<to>.<envelope from>." followed by the raw message, keyed with INBOUND_SECRET.
-// A signature older than inboundSignatureTolerance is refused (CASA 7.2).
+// (or another relay): "t=<unix seconds>,v2=<hex HMAC-SHA256>" keyed with INBOUND_SECRET over
+// "v2\n<t>\n<len(to)>:<to>\n<len(envelope from)>:<envelope from>\n" followed by the raw
+// message, each address prefixed with its length in bytes so no boundary between the fields
+// can move. The earlier "v1=" form, over "<t>.<to>.<envelope from>." and the message, is
+// still accepted for relays deployed before v2. A signature older than
+// inboundSignatureTolerance is refused (CASA 7.2).
 const InboundSignatureHeader = "OD-Inbound-Signature"
 
 // inboundSignatureTolerance bounds how old (or how far ahead) a signed request may be.
@@ -45,38 +48,56 @@ func writeProblem(w http.ResponseWriter, status int, code, detail string) {
 
 // SignInbound is the OD-Inbound-Signature value for a message (the relay's side).
 func SignInbound(secret string, t int64, to, envelopeFrom string, body []byte) string {
-	ts := strconv.FormatInt(t, 10)
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte(ts + "." + to + "." + envelopeFrom + "."))
-	mac.Write(body)
-	return "t=" + ts + ",v1=" + hex.EncodeToString(mac.Sum(nil))
+	return "t=" + strconv.FormatInt(t, 10) + ",v2=" + inboundMACv2(secret, t, to, envelopeFrom, body)
 }
 
-// inboundSignatureOK checks an OD-Inbound-Signature: the HMAC matches (compared in
-// constant time) and its timestamp is recent.
+// inboundMACv2 is the hex HMAC of a v2 signature.
+func inboundMACv2(secret string, t int64, to, envelopeFrom string, body []byte) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte("v2\n" + strconv.FormatInt(t, 10) + "\n" + strconv.Itoa(len(to)) + ":" + to + "\n" +
+		strconv.Itoa(len(envelopeFrom)) + ":" + envelopeFrom + "\n"))
+	mac.Write(body)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// inboundMACv1 is the hex HMAC of the earlier v1 signature.
+func inboundMACv1(secret string, t int64, to, envelopeFrom string, body []byte) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(strconv.FormatInt(t, 10) + "." + to + "." + envelopeFrom + "."))
+	mac.Write(body)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// inboundSignatureOK checks an OD-Inbound-Signature: the v2 HMAC (else, from a relay that
+// signs the earlier way, the v1 HMAC) matches, compared in constant time, and its
+// timestamp is recent.
 func inboundSignatureOK(header, secret, to, envelopeFrom string, body []byte, now time.Time) bool {
 	if secret == "" {
 		return false
 	}
-	var ts, sig string
+	var ts, v1, v2 string
 	for _, part := range strings.Split(header, ",") {
 		k, v, _ := strings.Cut(strings.TrimSpace(part), "=")
 		switch k {
 		case "t":
 			ts = v
 		case "v1":
-			sig = v
+			v1 = v
+		case "v2":
+			v2 = v
 		}
 	}
 	t, err := strconv.ParseInt(ts, 10, 64)
-	if err != nil || sig == "" {
+	if err != nil || (v1 == "" && v2 == "") {
 		return false
 	}
 	if d := now.Sub(time.Unix(t, 0)); d > inboundSignatureTolerance || d < -inboundSignatureTolerance {
 		return false
 	}
-	want := SignInbound(secret, t, to, envelopeFrom, body)
-	return subtle.ConstantTimeCompare([]byte(want), []byte("t="+ts+",v1="+strings.ToLower(sig))) == 1
+	if v2 != "" {
+		return subtle.ConstantTimeCompare([]byte(inboundMACv2(secret, t, to, envelopeFrom, body)), []byte(strings.ToLower(v2))) == 1
+	}
+	return subtle.ConstantTimeCompare([]byte(inboundMACv1(secret, t, to, envelopeFrom, body)), []byte(strings.ToLower(v1))) == 1
 }
 
 // inboundHTTP accepts one raw RFC 822 message for a forwarding address.
@@ -294,6 +315,11 @@ func (s *service) runSMTP(ctx context.Context, addr string) {
 		_ = srv.Close()
 	}()
 	s.log.Info("smtp receiver listening", "addr", addr, "domain", srv.Domain, "starttls", srv.TLSConfig != nil)
+	if len(s.d.Cfg.InboundSMTPRelays) == 0 {
+		// Mail straight from senders' servers carries only what they wrote: nothing here
+		// checks SPF, DKIM or DMARC (docs: self-hosting/email "Sender checks").
+		s.log.Warn("the built-in SMTP receiver checks no senders (SPF, DKIM, DMARC): mail it takes directly is unverified, and a ticket number in its subject or address only flags it on that ticket; put a mail server that checks senders in front (INBOUND_SMTP_RELAYS, INBOUND_AUTHSERV_ID) or use the Cloudflare Email Worker")
+	}
 	if err := srv.ListenAndServe(); err != nil && ctx.Err() == nil && !errors.Is(err, smtp.ErrServerClosed) {
 		s.log.Error("smtp receiver stopped", "err", err)
 	}

@@ -96,9 +96,17 @@ in.desk.example.com.  MX  10  desk.example.com.
 
 The installer's `--wizard` can set this up.
 
-<Callout type="note" title="Sender checks with this receiver">
+<Callout type="warning" title="Sender checks with this receiver">
 
-The built-in receiver does not check senders (SPF, DKIM, DMARC). Mail it takes straight from a sender's server believes no `Authentication-Results` at all, whatever `INBOUND_AUTHSERV_ID` says, because the sender wrote every header in it: its DMARC verdict is unknown and nothing is flagged on it. If a mail server of yours that does check senders relays to it, list that server's authserv-id in `INBOUND_AUTHSERV_ID` and its address in `INBOUND_SMTP_RELAYS`: only mail it hands over has those results believed.
+The built-in receiver does not check senders (SPF, DKIM, DMARC). Anyone can send it mail that claims to come from one of your customers. Mail it takes straight from a sender's server believes no `Authentication-Results` at all, whatever `INBOUND_AUTHSERV_ID` says, because the sender wrote every header in it: its DMARC verdict is unknown.
+
+What opendesk does about it:
+
+- A reply it can match to a ticket only by the ticket's number (a `[#123]` subject tag or a `+t123` address tag) and the customer's From address is flagged as unverified on that ticket: it does not reopen the ticket, run automations or get an AI answer, the same as a reply that failed DMARC. Replies matched by the Message-ID of a message the ticket sent are not affected.
+- Reply-To redirection and trusted contact forms need a DMARC pass, so they never apply to this mail.
+- opendesk logs a warning at startup while no relay is listed.
+
+To check senders, put a mail server that does (Postfix with OpenDMARC, Rspamd, a hosted inbound service) in front of the receiver, list its authserv-id in `INBOUND_AUTHSERV_ID` and its address in `INBOUND_SMTP_RELAYS`: only mail it hands over has those results believed. Or receive through the Cloudflare Email Worker (Option A), which comes with Cloudflare's checks.
 
 </Callout>
 
