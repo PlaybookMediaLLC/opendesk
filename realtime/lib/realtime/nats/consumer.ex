@@ -10,6 +10,12 @@ defmodule Realtime.Nats.Consumer do
 
   There is no queue group on purpose: every node must see every message (see
   `Realtime.Fanout`).
+
+  Revocations reach a node that was not listening when they were made: on every
+  connect the node subscribes to `od.gateway.revocations` and a reply inbox of
+  its own, and publishes a request there. Every node answers with the
+  revocations it holds (`Realtime.Revocations.export/1`), and the new node
+  merges each answer (`Realtime.Revocations.merge/2`).
   """
 
   use GenServer
@@ -18,9 +24,11 @@ defmodule Realtime.Nats.Consumer do
 
   alias Realtime.Fanout
   alias Realtime.Metrics
+  alias Realtime.Revocations
 
   @base_backoff 500
   @max_backoff 30_000
+  @revocations "od.gateway.revocations"
 
   def start_link(opts),
     do: GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
@@ -65,7 +73,7 @@ defmodule Realtime.Nats.Consumer do
     case settings(Keyword.get(nats, :url, ""), Keyword.get(nats, :token)) do
       {:ok, settings} ->
         send(self(), :connect)
-        {:ok, %{settings: settings, conn: nil, attempt: 0}}
+        {:ok, %{settings: settings, conn: nil, attempt: 0, inbox: inbox()}}
 
       {:error, reason} ->
         {:stop, reason}
@@ -81,8 +89,10 @@ defmodule Realtime.Nats.Consumer do
     settings = Map.put(state.settings, :tcp_opts, tcp_opts(host))
 
     with {:ok, conn} <- Gnat.start_link(settings),
-         :ok <- subscribe(conn) do
+         :ok <- subscribe(conn, [@revocations, state.inbox | Fanout.subjects()]) do
       Logger.info("NATS connected to #{host}:#{port}")
+      # What the other nodes revoked before this one was listening.
+      Gnat.pub(conn, @revocations, "{}", reply_to: state.inbox)
       {:noreply, %{state | conn: conn, attempt: 0}}
     else
       error ->
@@ -96,6 +106,25 @@ defmodule Realtime.Nats.Consumer do
         Process.send_after(self(), :connect, delay)
         {:noreply, %{state | attempt: state.attempt + 1}}
     end
+  end
+
+  # Another node asks for the revocations this one holds.
+  def handle_info({:msg, %{topic: @revocations, reply_to: reply_to}}, %{conn: conn} = state)
+      when is_binary(reply_to) and is_pid(conn) do
+    Gnat.pub(conn, reply_to, Jason.encode!(Revocations.export()))
+    {:noreply, state}
+  end
+
+  def handle_info({:msg, %{topic: @revocations}}, state), do: {:noreply, state}
+
+  # A node's answer to this one's request.
+  def handle_info({:msg, %{topic: inbox, body: body}}, %{inbox: inbox} = state) do
+    case Jason.decode(body) do
+      {:ok, entries} when is_list(entries) -> Revocations.merge(entries)
+      _ -> Metrics.incr({:nats_rejected, :invalid_revocations})
+    end
+
+    {:noreply, state}
   end
 
   def handle_info({:msg, %{topic: subject, body: body}}, state) do
@@ -125,8 +154,8 @@ defmodule Realtime.Nats.Consumer do
   def terminate(_reason, %{conn: conn}) when is_pid(conn), do: Gnat.stop(conn)
   def terminate(_reason, _state), do: :ok
 
-  defp subscribe(conn) do
-    Enum.reduce_while(Fanout.subjects(), :ok, fn subject, :ok ->
+  defp subscribe(conn, subjects) do
+    Enum.reduce_while(subjects, :ok, fn subject, :ok ->
       case Gnat.sub(conn, self(), subject) do
         {:ok, _sid} ->
           {:cont, :ok}
@@ -137,6 +166,9 @@ defmodule Realtime.Nats.Consumer do
       end
     end)
   end
+
+  # This node's reply subject for revocation answers.
+  defp inbox, do: "_INBOX.od-realtime." <> Base.encode16(:crypto.strong_rand_bytes(12), case: :lower)
 
   @doc false
   def backoff(attempt) do

@@ -5,7 +5,10 @@ defmodule Realtime.Revocations do
 
   Each `od.control.disconnect` (`Realtime.Fanout`) records its revocation time in ms: under
   the subject for a user-wide disconnect, under the session id for one session's. Every
-  node receives every disconnect (no queue group), so each keeps its own table.
+  node receives every disconnect (no queue group), so each keeps its own table. A node
+  that starts (or reconnects to NATS) asks the others for theirs (`export/1`, `merge/2`,
+  over `od.gateway.revocations`, `Realtime.Nats.Consumer`), so it also knows the
+  revocations made before it was listening.
   `RealtimeWeb.SocketAuth` refuses a token whose `sub`, or `sid`, has a revocation at or
   after the token's issue time (`iat_ms`, else `iat * 1000`).
 
@@ -16,7 +19,12 @@ defmodule Realtime.Revocations do
 
   use GenServer
 
+  alias Realtime.Ids
+
   @table __MODULE__
+  # At most this many entries go into one exported table.
+  @max_export 20_000
+  @kinds %{"sub" => :sub, "sid" => :sid}
   # Tokens live 5 minutes (`auth.WSTTL`); one more for clock skew between nodes.
   @ttl_ms 360_000
   @sweep_ms 30_000
@@ -57,6 +65,45 @@ defmodule Realtime.Revocations do
       [] -> false
     end
   end
+
+  @doc """
+  The live entries as `[kind, id, at, age_ms]` lists for another node: `kind` is
+  `"sub"` or `"sid"`, `at` the revocation time and `age_ms` how long ago this node
+  recorded it.
+  """
+  @spec export(integer()) :: [list()]
+  def export(now \\ System.monotonic_time(:millisecond)) do
+    cutoff = now - @ttl_ms
+
+    @table
+    |> :ets.tab2list()
+    |> Enum.filter(fn {_key, _at, mono} -> mono >= cutoff end)
+    |> Enum.take(@max_export)
+    |> Enum.map(fn {{kind, id}, at, mono} -> [Atom.to_string(kind), id, at, max(now - mono, 0)] end)
+  end
+
+  @doc """
+  Records the entries another node exported, each as recorded `age_ms` before `now`
+  here, so it is swept when the other node's copy is. Malformed entries are skipped.
+  """
+  @spec merge(term(), integer()) :: :ok
+  def merge(entries, now \\ System.monotonic_time(:millisecond))
+
+  def merge(entries, now) when is_list(entries) do
+    entries
+    |> Enum.take(@max_export)
+    |> Enum.each(fn
+      [kind, id, at, age]
+      when is_map_key(@kinds, kind) and is_integer(at) and at > 0 and is_integer(age) and
+             age >= 0 and age < @ttl_ms ->
+        if Ids.uuid?(id), do: record({@kinds[kind], Ids.normalize(id)}, at, now - age)
+
+      _ ->
+        :ok
+    end)
+  end
+
+  def merge(_entries, _now), do: :ok
 
   @doc "Removes the entries recorded more than `ttl_ms/0` before `now` (monotonic ms)."
   def sweep(now \\ System.monotonic_time(:millisecond)) do

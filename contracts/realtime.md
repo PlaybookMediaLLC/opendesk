@@ -36,6 +36,11 @@ URL, where proxies and access logs keep it. A token in the query string is not r
    it counts as issued at `iat * 1000`). Every gateway node records each `od.control.disconnect`
    (its `at`, or when the node received it) for the token lifetime plus a minute: under the
    subject for a user-wide one (no `session_id`; API keys too), under the session for a session's.
+   A node that starts, or reconnects to NATS, publishes a request on `od.gateway.revocations` with
+   a reply subject of its own; every node answers with the revocations it holds
+   (`[[kind, id, at, age_ms], ...]`, `kind` `sub` or `sid`), and the new node records them, each
+   kept as long as on the node it came from, so a revocation made before a node was listening
+   holds there too.
    A token whose `sub`, or `sid`, was revoked at or after its issue time is refused (HTTP 403),
    so a token fetched before a logout, a role or team change or a removal cannot open a socket
    after it, and the client's next token carries what the API says now.
