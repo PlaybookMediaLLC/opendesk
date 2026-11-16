@@ -37,6 +37,8 @@ curl -X POST https://api.opendesk.sh/v1/realtime/token \
 
 Users and API keys with the `realtime` scope can request tokens. Tokens live **5 minutes** and only need to be valid when the socket connects. On every reconnect, fetch a fresh one.
 
+An API key receives in full only the events its read scopes cover: ticket and message events with `tickets:read`, contact and company events with `contacts:read`, knowledge base events with `kb:read`, wiki events with `wiki:read`, changelog events with `changelog:read`, and workspace settings, members and everything else with `settings:read`. Any other event arrives as an `event.hidden` stand-in with no data, so `seq` stays contiguous. The same holds for `GET /v1/events`. Give the key the read scopes for what it should follow, plus `realtime` to connect.
+
 ## Connect
 
 ```js

@@ -8,6 +8,13 @@
 #     migration numbered at or below a version that main (the cloud) or a
 #     release (self-hosters) already has is never applied to those databases.
 #     So every migration a ref lacks must be numbered above that ref's highest.
+#   - An index built on a large table without CONCURRENTLY blocks its writes for
+#     the whole build. From version CONCURRENT_SINCE on, CREATE INDEX on a table
+#     in LARGE_TABLES must say CONCURRENTLY, and a CONCURRENTLY statement must be
+#     alone in its file: golang-migrate sends a file as one query, which Postgres
+#     runs in a transaction only when it holds several statements. A migration
+#     that must build one in a transaction on purpose says why in a comment
+#     starting `-- check-migrations: blocking index:`.
 #
 # Usage: check-migrations.sh [--against <ref>]... [dir]
 #
@@ -56,6 +63,34 @@ for path in "$DIR"/*.down.sql; do
   [[ -f ${path%.down.sql}.up.sql ]] || fail "missing $(basename "${path%.down.sql}").up.sql"
 done
 
+# Index builds that would block writes on a large table (see the header).
+LARGE_TABLES=" tickets messages activities events audit_logs contacts attachments inbound_emails notifications webhook_deliveries agent_presence api_key_requests collab_messages collab_threads river_job "
+CONCURRENT_SINCE=759
+for path in "$DIR"/*.sql; do
+  name=$(basename "$path")
+  version=${name%%_*}
+  ((10#$version > CONCURRENT_SINCE)) || continue
+  # One statement per line: comments dropped, split at semicolons.
+  statements=$(sed 's/--.*$//' "$path" | tr '\n' ' ' | tr ';' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$' || true)
+  count=$(grep -c . <<<"$statements" || true)
+  blocking_ok=false
+  grep -q -- '-- check-migrations: blocking index:' "$path" && blocking_ok=true
+  while IFS= read -r st; do
+    [[ -n $st ]] || continue
+    upper=$(tr '[:lower:]' '[:upper:]' <<<"$st")
+    if [[ $upper == *CONCURRENTLY* && $count -gt 1 ]]; then
+      fail "$name runs CONCURRENTLY beside other statements: Postgres then runs the file in a transaction, which CONCURRENTLY refuses. Give that statement a migration of its own."
+    fi
+    [[ $upper =~ ^CREATE[[:space:]]+(UNIQUE[[:space:]]+)?INDEX ]] || continue
+    [[ $upper =~ [[:space:]]ON[[:space:]]+(ONLY[[:space:]]+)?\"?([A-Z0-9_]+) ]] || continue
+    table=$(tr '[:upper:]' '[:lower:]' <<<"${BASH_REMATCH[2]}")
+    [[ $LARGE_TABLES == *" $table "* ]] || continue
+    if [[ $upper != *CONCURRENTLY* ]] && ! $blocking_ok; then
+      fail "$name builds an index on $table, a large table, without CONCURRENTLY: writes to it would wait for the build. Use CREATE INDEX CONCURRENTLY IF NOT EXISTS in a migration of its own (and DROP INDEX CONCURRENTLY IF EXISTS in its down)."
+    fi
+  done <<<"$statements"
+done
+
 # Order against refs. The path inside the repository, for git ls-tree.
 if ! prefix=$(git -C "$DIR" rev-parse --show-prefix 2>/dev/null); then
   [[ ${#refs[@]} -eq 0 ]] || { echo "check-migrations: $DIR is not in a git repository" >&2; exit 1; }
@@ -88,4 +123,4 @@ for ref in "${refs[@]}"; do
 done
 
 [[ $status -eq 0 ]] || exit 1
-echo "check-migrations: ${#ups[@]} migrations, no duplicate versions, every up has its down${checked}."
+echo "check-migrations: ${#ups[@]} migrations, no duplicate versions, every up has its down, no blocking index build on a large table${checked}."

@@ -2,10 +2,14 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/useopendesk/opendesk/internal/events"
 )
 
 // teamFixture is a workspace with an owner, an agent, a second agent and a viewer.
@@ -396,5 +400,39 @@ func TestDeleteTeamMovesAliasTeams(t *testing.T) {
 	f.scalar(`SELECT alias_teams FROM mailboxes WHERE id = $1`, &got, mb)
 	if len(got) != 2 || got["p@example.com"] != b.String() || got["s@example.com"] != keep.String() {
 		t.Fatalf("alias_teams %v", got)
+	}
+}
+
+// A role change closes the member's sockets and refuses their earlier ws tokens
+// (od.control.disconnect); setting the role they already have does not.
+func TestRoleChangeDisconnects(t *testing.T) {
+	f := newTeamFixture(t)
+	sub, err := f.e.d.NATS.SubscribeSync(events.DisconnectSubject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sub.Unsubscribe() }()
+	if err := f.e.d.NATS.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if r := f.owner.do("PATCH", "/v1/members/"+f.agentID.String(), map[string]any{"role": "viewer"}); r.Status != 200 {
+		t.Fatalf("role: %d %s", r.Status, r.Raw)
+	}
+	msg, err := sub.NextMsg(2 * time.Second)
+	if err != nil {
+		t.Fatalf("no disconnect after a role change: %v", err)
+	}
+	var body struct {
+		UserID    string `json:"user_id"`
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal(msg.Data, &body); err != nil || body.UserID != f.agentID.String() || body.SessionID != "" {
+		t.Fatalf("disconnect %s", msg.Data)
+	}
+	if r := f.owner.do("PATCH", "/v1/members/"+f.agentID.String(), map[string]any{"role": "viewer"}); r.Status != 200 {
+		t.Fatalf("same role: %d", r.Status)
+	}
+	if msg, err := sub.NextMsg(200 * time.Millisecond); err == nil {
+		t.Fatalf("disconnect without a change: %s", msg.Data)
 	}
 }

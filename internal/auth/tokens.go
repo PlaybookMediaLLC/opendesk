@@ -69,6 +69,9 @@ type Claims struct {
 	// Workspaces (ws, users only) are the other workspaces the socket may join besides wid,
 	// by id, with the user's role and private teams in each (contracts/tokens.md).
 	Workspaces map[string]WSWorkspace `json:"workspaces,omitempty"`
+	// Events (ws, scoped credentials only) says which events the socket receives in full;
+	// the rest reach it as the event.hidden stand-in (contracts/tokens.md, EventFilter).
+	Events *EventFilter `json:"events,omitempty"`
 	// Brand binds a widget_ws token to the brand of the widget it was issued for.
 	Brand string `json:"bid,omitempty"`
 	// Free-form payload for oauth_state (provider, redirect, mailbox flow).

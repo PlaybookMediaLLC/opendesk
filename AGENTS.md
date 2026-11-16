@@ -83,6 +83,18 @@ Self-hosted = `opendesk` + `realtime` + `postgres` behind Caddy on one domain: `
   below the highest on main or in the last release, in CI and before a release. The first
   build used per-area ranges: core `0001xx`, email `0002xx`, helpdesk `0003xx`, billing
   `0004xx`, ai `0005xx`; those are closed.
+- Migrations on large tables never block writes for long. An index on one of them (tickets,
+  messages, activities, events, audit_logs, contacts, ...; `LARGE_TABLES` in
+  `scripts/check-migrations.sh`) is `CREATE INDEX CONCURRENTLY IF NOT EXISTS`, alone in its
+  migration, with `DROP INDEX CONCURRENTLY IF EXISTS` in its down: golang-migrate sends each
+  file as one query, and Postgres runs a file of one statement outside a transaction. The
+  script refuses, from 000760 on, a blocking index on such a table and a CONCURRENTLY statement
+  beside others; a migration that needs one in a transaction on purpose says why in a
+  `-- check-migrations: blocking index:` comment. Migrations run in one process (the cloud's
+  migrate task, a self-host's single container), as a concurrent build waits for every other
+  transaction. A failed concurrent build leaves an invalid index and a dirty version: drop the
+  index, then `migrate force` the previous version. Backfills of large tables go in batches
+  in a job, not in the migration.
 - Run `gofmt -w` on touched files, then `go build ./... && go vet ./...`.
 
 ## Cloud and self-hosted
@@ -155,7 +167,9 @@ Sessions and tokens
   gateway reads no query token), public token lookups and CSAT take a body. `/v1/`
   responses are `no-store` unless their route says otherwise.
 - Every credential (API key, person, widget visitor) is rate limited across the API
-  (`httpx.CredentialLimit`, `RateLimit-*` headers); unresolved credentials per address.
+  (`httpx.CredentialLimit`, `RateLimit-*` headers); unresolved credentials per address. An API
+  key's limit counts in Postgres for the whole instance (`d.Limiter.SharedTake`); people's and
+  visitors' count per API process.
 
 Access control
 - Every workspace-owned row is read and written with `workspace_id = $1` from the
@@ -199,7 +213,10 @@ Errors, logging, data
   and `CREDENTIALS_KEY` are required.
 - Mailbox credentials, OAuth tokens, webhook secrets, TOTP secrets: AES-GCM via `d.Box`. Every
   column that stores `d.Box` output is in `internal/sealed.Columns`, so a replaced
-  `CREDENTIALS_KEY` (`CREDENTIALS_KEY_PREVIOUS`) re-encrypts it.
+  `CREDENTIALS_KEY` (`CREDENTIALS_KEY_PREVIOUS`) re-encrypts it. A column bound to its rows
+  (`sealed.bound`; webhook secrets and headers) is written with `d.Box.SealFor` and read with
+  `d.Box.OpenFor`, with `crypto.RowAAD(table, column, row key)`, so a value opens only in its own
+  row; the key rotation seals its older values again that way. Bind a new column the same way.
 - Security events are audit-logged: login, failed login, 2FA changes, password change,
   member and role changes, API key and webhook changes, mailbox and integration connect/disconnect.
 - Users can delete their account and owners their workspace (data removed, not hidden).

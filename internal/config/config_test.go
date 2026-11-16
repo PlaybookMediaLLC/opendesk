@@ -320,3 +320,33 @@ func TestAIAgentInstructions(t *testing.T) {
 		t.Fatalf("over the limit: %v", err)
 	}
 }
+
+// The api and worker roles run only against a shared NATS server.
+func TestSplitRolesNeedNATSURL(t *testing.T) {
+	productionEnv(t)
+	for _, role := range []string{"api", "worker"} {
+		t.Setenv("OPENDESK_ROLE", role)
+		t.Setenv("NATS_URL", "")
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "NATS_URL") {
+			t.Fatalf("%s without NATS_URL: want refusal, got %v", role, err)
+		}
+		t.Setenv("NATS_URL", "nats://nats:4222")
+		if _, err := Load(); err != nil {
+			t.Fatalf("%s with NATS_URL: %v", role, err)
+		}
+	}
+	t.Setenv("OPENDESK_ROLE", "all")
+	t.Setenv("NATS_URL", "")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("all without NATS_URL: %v", err)
+	}
+	c.Role = "worker"
+	if err := c.CheckRole(); err == nil {
+		t.Fatal("a role set after loading is checked too")
+	}
+	c.Role = "both"
+	if err := c.CheckRole(); err == nil || !strings.Contains(err.Error(), "must be all, api or worker") {
+		t.Fatalf("unknown role: %v", err)
+	}
+}

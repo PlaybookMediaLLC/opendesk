@@ -3,6 +3,8 @@
 // so a key can be replaced without losing what it protects.
 package sealed
 
+import "github.com/useopendesk/opendesk/internal/crypto"
+
 // Column is one sealed column: a table, its single-column primary key and the bytea
 // column that holds d.Box output (nonce || AES-256-GCM ciphertext).
 type Column struct {
@@ -39,6 +41,22 @@ var Columns = []Column{
 	{"phone_connections", "id", "webhook_secret_enc"},        // phone provider webhook tokens
 	{"ticket_panels", "id", "secret_enc"},                    // ticket panel Shopify tokens and signing secrets
 }
+
+// bound are the sealed columns whose values are bound to their row: written with
+// d.Box.SealFor and read with d.Box.OpenFor, with AAD (Column.AAD) naming the table, the
+// column and the row's key, so a value copied to another row or column does not open.
+// Every reader of a bound column uses OpenFor, which still opens the values sealed before
+// the column was bound; the key rotation (Pass) seals those again for their row.
+var bound = map[Column]bool{
+	{"webhooks", "id", "secret_enc"}:  true,
+	{"webhooks", "id", "headers_enc"}: true,
+}
+
+// Bound reports a column whose values are bound to their row.
+func (c Column) Bound() bool { return bound[c] }
+
+// AAD is the associated data a bound column's value in the row with key is sealed with.
+func (c Column) AAD(key string) []byte { return crypto.RowAAD(c.Table, c.Column, key) }
 
 // NotSealed are the bytea columns that hold no d.Box output: hashes, public keys and
 // identifiers.

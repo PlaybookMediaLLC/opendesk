@@ -556,3 +556,12 @@ func (WikiTrashPurgeArgs) Kind() string { return "wiki.trash_purge" }
 type WikiRemindersArgs struct{}
 
 func (WikiRemindersArgs) Kind() string { return "wiki.reminders" }
+
+// WorkspacePurgeArgs removes a large workspace whose deletion was asked for
+// (workspaces.deleting_at set): its stored files, then its rows in batches, then the
+// workspace itself. Owner: core.
+type WorkspacePurgeArgs struct {
+	WorkspaceID uuid.UUID `json:"workspace_id"`
+}
+
+func (WorkspacePurgeArgs) Kind() string { return "core.workspace_purge" }

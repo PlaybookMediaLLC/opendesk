@@ -59,6 +59,7 @@ The common codes:
 | `billing_unavailable` | 502 | The payment provider could not be reached. Retry shortly. |
 | `conflict` | 409 | The request conflicts with the current state, such as a duplicate. |
 | `idempotency_in_progress` | 409 | A request with the same [idempotency key](/api/idempotency/) is still running. Retry shortly. |
+| `idempotency_secret_withheld` | 409 | The request with this [idempotency key](/api/idempotency/) succeeded and its response held a secret that is shown once, so it is not replayed. |
 | `idempotency_key_reused` | 422 | The idempotency key was used for a different request. Use a new key. |
 | `too_large` | 413 | The upload or message is too large. |
 | `rate_limited` | 429 | Too many requests. See [Rate limits](/api/rate-limits/). |

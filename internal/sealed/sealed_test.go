@@ -308,3 +308,58 @@ func TestRotationOverRegistry(t *testing.T) {
 		t.Fatalf("users.totp_secret_enc after the pass: %v", err)
 	}
 }
+
+// A bound column's values are sealed again for their own row: those a previous key sealed,
+// and those sealed before the column was bound. Afterwards each opens only in its row.
+func TestRotationBindsValuesToTheirRow(t *testing.T) {
+	p := pool(t)
+	ctx := context.Background()
+	c := scratch(t, p)
+	bound[c] = true
+	t.Cleanup(func() { delete(bound, c) })
+	a, ba := box(t, 'a'), box(t, 'b', 'a')
+	old := insert(t, p, c, a, "sealed-with-a")
+	unbound := insert(t, p, c, ba, "sealed-with-b-unbound")
+	already := uuid.New()
+	sealed, err := ba.SealFor(c.AAD(already.String()), []byte("bound-with-b"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Exec(ctx, `INSERT INTO `+c.Table+` (id, v) VALUES ($1, $2)`, already, sealed); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := (&Pass{Q: p, Box: ba, Log: quiet(), Columns: []Column{c}}).Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Checked != 3 || res.Resealed != 2 || res.Unreadable != 0 {
+		t.Fatalf("first pass: %+v", res)
+	}
+	b := box(t, 'b')
+	for id, plain := range map[uuid.UUID]string{old: "sealed-with-a", unbound: "sealed-with-b-unbound", already: "bound-with-b"} {
+		v := value(t, p, c, id)
+		if got, err := b.OpenFor(c.AAD(id.String()), v); err != nil || string(got) != plain {
+			t.Fatalf("%s in its row after the pass: %q %v", plain, got, err)
+		}
+		if _, err := b.OpenFor(c.AAD(uuid.NewString()), v); err == nil {
+			t.Fatalf("%s opened in another row", plain)
+		}
+	}
+	res, err = (&Pass{Q: p, Box: ba, Log: quiet(), Columns: []Column{c}}).Run(ctx)
+	if err != nil || res.Resealed != 0 || !res.Done() {
+		t.Fatalf("second pass: %+v %v", res, err)
+	}
+}
+
+// Every bound column is a registered sealed column.
+func TestBoundColumnsAreRegistered(t *testing.T) {
+	if len(bound) == 0 {
+		t.Fatal("no bound columns")
+	}
+	for c := range bound {
+		if !slices.Contains(Columns, c) {
+			t.Errorf("bound column %s.%s is not in Columns", c.Table, c.Column)
+		}
+	}
+}

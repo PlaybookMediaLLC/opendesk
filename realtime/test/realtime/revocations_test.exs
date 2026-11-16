@@ -51,6 +51,47 @@ defmodule Realtime.RevocationsTest do
     assert Revocations.revoked?(fresh)
   end
 
+  test "another node's table is merged, ages kept, malformed entries skipped" do
+    mono = System.monotonic_time(:millisecond)
+    now = Tokens.now_ms()
+    [sub, sid, other] = [Tokens.uuid(), Tokens.uuid(), Tokens.uuid()]
+
+    :ok =
+      Revocations.merge(
+        [
+          ["sub", String.upcase(sub), now, 1_000],
+          ["sid", sid, now, 0],
+          ["sub", other, now, Revocations.ttl_ms()],
+          ["role", Tokens.uuid(), now, 0],
+          ["sub", "nope", now, 0],
+          ["sub", Tokens.uuid(), "now", 0],
+          "junk"
+        ],
+        mono
+      )
+
+    assert Revocations.revoked?(%{sub: sub, sid: nil, issued_ms: now})
+    assert Revocations.revoked?(%{sub: Tokens.uuid(), sid: sid, issued_ms: now})
+    refute Revocations.revoked?(%{sub: other, sid: nil, issued_ms: now})
+    assert Revocations.merge("junk", mono) == :ok
+
+    # A merged entry keeps its age, so it is swept when the node it came from sweeps it.
+    assert ["sub", sub, now, 1_000] in Revocations.export(mono)
+  end
+
+  test "the exported table round-trips through merge" do
+    mono = System.monotonic_time(:millisecond)
+    now = Tokens.now_ms()
+    sub = Tokens.uuid()
+    Revocations.record({:sub, sub}, now, mono - 500)
+
+    exported = Revocations.export(mono)
+    assert ["sub", sub, now, 500] in exported
+
+    exported |> Jason.encode!() |> Jason.decode!() |> Revocations.merge(mono)
+    assert Revocations.revoked?(%{sub: sub, sid: nil, issued_ms: now})
+  end
+
   test "an entry outlives the token lifetime" do
     # Tokens live 5 minutes (auth.WSTTL); a token issued before a revocation must be
     # expired before the revocation is forgotten.

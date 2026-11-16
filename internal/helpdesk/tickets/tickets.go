@@ -422,7 +422,8 @@ func registerTickets(d *deps.Deps, api huma.API) {
 				return nil, httpx.Wrap(err)
 			}
 			var t domain.Ticket
-			err = d.DB.Tx(ctx, func(tx pgx.Tx) error {
+			// Safe to run again after a deadlock: t is set only at the end.
+			err = d.DB.TxRetry(ctx, func(tx pgx.Tx) error {
 				id, err := domain.ResolveVisibleTicket(ctx, tx, p, in.ID)
 				if err != nil {
 					return err
@@ -516,8 +517,10 @@ func registerTickets(d *deps.Deps, api huma.API) {
 					return nil, httpx.Wrap(err)
 				}
 			}
-			out := ticketBulkResult{Data: []domain.Ticket{}}
-			err = d.DB.Tx(ctx, func(tx pgx.Tx) error {
+			var out ticketBulkResult
+			// TxRetry runs this again after a deadlock, so it starts from an empty result.
+			err = d.DB.TxRetry(ctx, func(tx pgx.Tx) error {
+				out = ticketBulkResult{Data: []domain.Ticket{}}
 				ids := in.Body.IDs
 				if in.Body.Query != nil {
 					f, err := ticketListQuery(ctx, tx, p, in.Body.Query.listInput())
@@ -534,15 +537,24 @@ func registerTickets(d *deps.Deps, api huma.API) {
 					}
 				}
 				seen := map[uuid.UUID]bool{}
+				resolved := make([]uuid.UUID, 0, len(ids))
 				for _, raw := range ids {
 					id, err := domain.ResolveVisibleTicket(ctx, tx, p, raw)
 					if err != nil {
 						return err
 					}
-					if seen[id] {
-						continue
+					if !seen[id] {
+						seen[id] = true
+						resolved = append(resolved, id)
 					}
-					seen[id] = true
+				}
+				// Every ticket is locked, in id order, before the first change publishes an
+				// event: the workspace's event lock then comes after all the ticket locks, the
+				// order a single ticket's edit takes them in.
+				if err := lockTickets(ctx, tx, p.WorkspaceID, resolved); err != nil {
+					return err
+				}
+				for _, id := range resolved {
 					if in.Body.Delete {
 						if err := deleteTicket(ctx, tx, p.WorkspaceID, id, p, actorOf(p)); err != nil {
 							return err
@@ -996,6 +1008,16 @@ func deleteTicket(ctx context.Context, tx pgx.Tx, wid, id uuid.UUID, by *auth.Pr
 		return err
 	}
 	_, err = events.Publish(ctx, tx, events.Event{WorkspaceID: wid, Type: "ticket.deleted", TicketID: &id, Data: map[string]any{"ticket_id": id}})
+	return err
+}
+
+// lockTickets locks the workspace's tickets ids in id order, the order every write that
+// changes several tickets locks them in, so two of them never wait on each other.
+func lockTickets(ctx context.Context, tx pgx.Tx, wid uuid.UUID, ids []uuid.UUID) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	_, err := tx.Exec(ctx, `SELECT id FROM tickets WHERE workspace_id = $1 AND id = ANY($2) ORDER BY id FOR UPDATE`, wid, ids)
 	return err
 }
 

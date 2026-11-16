@@ -357,6 +357,7 @@ func (s *Service) registerRoutes(api huma.API) {
 					return nil, httpx.E(422, "invalid_url", err.Error())
 				}
 				x.Name = hostOf(x.Target)
+				httpx.MarkSecretResponse(ctx)
 				out.Body.Secret = newSecret()
 				if x.SecretEnc, err = s.d.Box.Seal([]byte(out.Body.Secret)); err != nil {
 					return nil, httpx.Wrap(err)
@@ -557,6 +558,7 @@ func (s *Service) registerRoutes(api huma.API) {
 				return nil, httpx.Validation("Only an http panel has a signing secret.")
 			}
 			out := &createdBody{CacheControl: "no-store"}
+			httpx.MarkSecretResponse(ctx)
 			out.Body.Secret = newSecret()
 			sealed, err := s.d.Box.Seal([]byte(out.Body.Secret))
 			if err != nil {

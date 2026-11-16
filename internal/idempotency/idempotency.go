@@ -4,6 +4,9 @@
 // in Postgres before the handler runs. The finished response (status < 500) is stored
 // for 24 hours and replayed for a retry with the same key, method, path and body,
 // with Idempotent-Replayed: true. Keys are scoped to the workspace and the principal.
+// A response that carries a secret shown once (httpx.MarkSecretResponse) is never
+// stored: the key keeps only that the request succeeded, and a retry is refused with
+// 409 idempotency_secret_withheld (and the resource's Location).
 package idempotency
 
 import (
@@ -185,6 +188,7 @@ type record struct {
 	contentType string
 	location    string
 	body        []byte
+	secret      bool
 	createdAt   time.Time
 }
 
@@ -203,12 +207,12 @@ func (s *Store) claim(ctx context.Context, sc scope, method, path string, hash [
 			return uuid.Nil, nil, err
 		}
 		var rec record
-		err = s.Pool.QueryRow(ctx, `SELECT id, method, path, request_hash, status, content_type, location, body_enc, created_at
+		err = s.Pool.QueryRow(ctx, `SELECT id, method, path, request_hash, status, content_type, location, body_enc, secret, created_at
 			FROM idempotency_keys
 			WHERE COALESCE(workspace_id, '00000000-0000-0000-0000-000000000000'::uuid) = $1
 			  AND COALESCE(user_id, api_key_id) = $2 AND key = $3`,
 			sc.workspace, sc.principal(), sc.key).Scan(&rec.id, &rec.method, &rec.path, &rec.hash, &rec.status,
-			&rec.contentType, &rec.location, &rec.body, &rec.createdAt)
+			&rec.contentType, &rec.location, &rec.body, &rec.secret, &rec.createdAt)
 		if errors.Is(err, pgx.ErrNoRows) {
 			continue // removed in between; claim again
 		}
@@ -238,6 +242,16 @@ func (s *Store) answer(w http.ResponseWriter, r *http.Request, rec *record, meth
 			"A request with this Idempotency-Key is still in progress. Retry it shortly."))
 		return
 	}
+	// A secret is shown once: the first response had it, and no copy was kept.
+	if rec.secret {
+		if rec.location != "" {
+			w.Header().Set("Location", rec.location)
+		}
+		writeProblem(w, r, httpx.E(http.StatusConflict, "idempotency_secret_withheld",
+			"The request with this Idempotency-Key succeeded, and its response held a secret that is shown only once. "+
+				"If you did not receive it, remove what was created and create it again with a new key."))
+		return
+	}
 	var body []byte
 	if len(rec.body) > 0 {
 		var err error
@@ -263,6 +277,8 @@ func (s *Store) answer(w http.ResponseWriter, r *http.Request, rec *record, meth
 // should not be kept (server errors, throttling, streams, oversized bodies, panics).
 func (s *Store) run(w http.ResponseWriter, r *http.Request, next http.Handler, id uuid.UUID) {
 	rec := &recorder{ResponseWriter: w, status: http.StatusOK}
+	markCtx, secret := httpx.WithSecretMark(r.Context())
+	r = r.WithContext(markCtx)
 	ctx := context.WithoutCancel(r.Context())
 	done := false
 	defer func() {
@@ -278,8 +294,9 @@ func (s *Store) run(w http.ResponseWriter, r *http.Request, next http.Handler, i
 	if !keep(rec) {
 		return
 	}
+	withheld := secret.Load()
 	var sealed []byte
-	if rec.buf.Len() > 0 {
+	if rec.buf.Len() > 0 && !withheld {
 		var err error
 		if sealed, err = s.Box.Seal(rec.buf.Bytes()); err != nil {
 			s.Log.Error("idempotency seal", "err", err, "request_id", httpx.RequestIDFrom(ctx))
@@ -288,7 +305,7 @@ func (s *Store) run(w http.ResponseWriter, r *http.Request, next http.Handler, i
 	}
 	h := rec.Header()
 	if _, err := s.Pool.Exec(ctx, `UPDATE idempotency_keys SET status = $2, content_type = $3, location = $4, body_enc = $5,
-		completed_at = now() WHERE id = $1`, id, rec.status, h.Get("Content-Type"), h.Get("Location"), sealed); err != nil {
+		secret = $6, completed_at = now() WHERE id = $1`, id, rec.status, h.Get("Content-Type"), h.Get("Location"), sealed, withheld); err != nil {
 		s.Log.Error("idempotency save", "err", err, "request_id", httpx.RequestIDFrom(ctx))
 		return
 	}

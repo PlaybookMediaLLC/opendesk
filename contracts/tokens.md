@@ -58,6 +58,11 @@ and a consumer accepts exactly one purpose. `exp` is required.
   "name": "Anna", "avatar": "https://...", "teams": ["<private team id>"], "sid": "<session_id>" /* users */,
   "jti": "<uuid>", "iat": 0, "iat_ms": 0, "exp": 0 }
 // teams: the private teams whose topics the socket may join (contracts/teams.md "Visibility"); omitted when none
+// events (API keys and OAuth grants only): { "only": bool, "resources": ["ticket", ...] }. An event's resource is
+// its type up to the first dot. With only, the socket receives in full the events of the listed resources alone;
+// without, every event except those. Any other event reaches it as the event.hidden stand-in. The API builds it
+// from its one table of event scopes (contracts/events.md "Who receives an event"); a person's token has none.
+// A malformed claim refuses the token (at most 200 resources)
 // sid: the session the token was issued to (users only). iat_ms: the issue time in ms, taken before the API
 // reads what the claims say. The gateway refuses a token whose sub or sid was revoked (od.control.disconnect)
 // at or after it (contracts/realtime.md "Connect"); without iat_ms it compares iat * 1000

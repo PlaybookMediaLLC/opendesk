@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -86,7 +87,8 @@ func TestAccountFlow(t *testing.T) {
 	if rt.Status != 200 || rt.str("url") != "ws://gw.test/socket" {
 		t.Fatalf("key realtime token: %d %s", rt.Status, rt.Raw)
 	}
-	if cl, err := e.d.Tokens.Verify(rt.str("token"), auth.PurposeWS); err != nil || cl.Kind != "api_key" || cl.SessionID != "" || cl.IssuedAtMs <= 0 {
+	if cl, err := e.d.Tokens.Verify(rt.str("token"), auth.PurposeWS); err != nil || cl.Kind != "api_key" || cl.SessionID != "" || cl.IssuedAtMs <= 0 ||
+		cl.Events == nil || !cl.Events.Only || !slices.Contains(cl.Events.Resources, "ticket") || slices.Contains(cl.Events.Resources, "contact") {
 		t.Fatalf("key ws claims: %+v %v", cl, err)
 	}
 	if r := owner.do("POST", "/v1/api-keys", map[string]any{"name": "Bad", "scopes": []string{"admin:all"}}); r.Status != 422 {
@@ -109,9 +111,10 @@ func TestAccountFlow(t *testing.T) {
 	if r := owner.do("POST", "/v1/webhooks/"+hook.str("id")+"/test", nil); r.Status != 202 || r.str("event_type") != "webhook.test" {
 		t.Fatalf("test: %d %s", r.Status, r.Raw)
 	}
-	// Webhook events reach the owner and admins alone: a tickets:read key replays the stand-in.
+	// Webhook events reach the owner and admins alone, and member events need settings:read:
+	// a tickets:read key replays their stand-in.
 	evs := kc.do("GET", "/v1/events?since=0", nil)
-	if evs.Status != 200 || !strings.Contains(string(evs.Raw), "member.added") || strings.Contains(string(evs.Raw), "webhook.created") ||
+	if evs.Status != 200 || strings.Contains(string(evs.Raw), "member.added") || strings.Contains(string(evs.Raw), agentEmail) || strings.Contains(string(evs.Raw), "webhook.created") ||
 		strings.Contains(string(evs.Raw), "127.0.0.1:1/hook") || !strings.Contains(string(evs.Raw), "event.hidden") {
 		t.Fatalf("events: %d %s", evs.Status, evs.Raw)
 	}

@@ -7,8 +7,12 @@ defmodule RealtimeWeb.WorkspaceChannel do
 
   use Phoenix.Channel, log_join: false, log_handle_in: false
 
+  # A scoped credential's socket receives only the events its scopes read
+  # (`RealtimeWeb.Channels.EventScope`).
+  intercept ["event"]
+
   alias Realtime.Auth
-  alias RealtimeWeb.Channels.Guard
+  alias RealtimeWeb.Channels.{EventScope, Guard}
 
   @impl true
   def join("workspace:" <> wid, _payload, %{assigns: %{kind: kind} = assigns} = socket)
@@ -25,6 +29,12 @@ defmodule RealtimeWeb.WorkspaceChannel do
   end
 
   def join(_topic, _payload, _socket), do: Guard.forbidden(:workspace)
+
+  @impl true
+  def handle_out("event", payload, socket) do
+    push(socket, "event", EventScope.visible(payload, socket))
+    {:noreply, socket}
+  end
 
   @impl true
   def handle_in(_event, _payload, socket) do

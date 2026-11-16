@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"strings"
 	"time"
 
@@ -57,7 +58,11 @@ func Open(ctx context.Context, pooledURL, directURL string) (*DB, error) {
 		if err != nil {
 			return nil, fmt.Errorf("parse DATABASE_URL_DIRECT: %w", err)
 		}
-		directCfg.MaxConns = 10
+		// River, the event relay's LISTEN and flushes and the prune job share these. A
+		// pool_max_conns in DATABASE_URL_DIRECT sizes it; without one it holds 10.
+		if !strings.Contains(directURL, "pool_max_conns") {
+			directCfg.MaxConns = 10
+		}
 		directCfg.AfterConnect = scanUTC
 		if direct, err = pgxpool.NewWithConfig(ctx, directCfg); err != nil {
 			return nil, err
@@ -89,9 +94,42 @@ func (d *DB) Close() {
 	d.Pool.Close()
 }
 
-// Tx runs fn in a transaction on the pooled connection.
+// Tx runs fn in a transaction on the pooled connection. It runs fn once: fn may change
+// state outside the transaction (a captured result, a NATS message), so a transaction that
+// Postgres aborted is not retried here (see TxRetry).
 func (d *DB) Tx(ctx context.Context, fn func(tx pgx.Tx) error) error {
 	return pgx.BeginFunc(ctx, d.Pool, fn)
+}
+
+// txAttempts bounds TxRetry: the first run and two retries.
+const txAttempts = 3
+
+// TxRetry runs fn in a transaction like Tx, and runs it again, up to txAttempts times in
+// all, when Postgres aborts the transaction for a deadlock or a serialization failure
+// (IsRetryable). fn must be safe to run again from the start: everything it computes
+// outside the transaction is reset at its top, and it sends nothing outside the database.
+func (d *DB) TxRetry(ctx context.Context, fn func(tx pgx.Tx) error) error {
+	var err error
+	for attempt := 1; ; attempt++ {
+		err = pgx.BeginFunc(ctx, d.Pool, fn)
+		if err == nil || attempt >= txAttempts || !IsRetryable(err) {
+			return err
+		}
+		// A short, growing, jittered pause lets the transaction that won finish.
+		pause := time.Duration(attempt*attempt)*10*time.Millisecond + time.Duration(rand.Int64N(int64(10*time.Millisecond)))
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(pause):
+		}
+	}
+}
+
+// IsRetryable reports an error that aborted a transaction which can succeed when run
+// again: a deadlock (40P01) or a serialization failure (40001).
+func IsRetryable(err error) bool {
+	var pg *pgconn.PgError
+	return errors.As(err, &pg) && (pg.Code == "40P01" || pg.Code == "40001")
 }
 
 // Migrate applies app migrations and River's queue tables over the direct connection.

@@ -39,9 +39,14 @@ it exists, and this file is the contract the parts are built against.
 - Idempotency: `Idempotency-Key` header (1..255 printable ASCII) on authenticated POST routes, kept 24h per
   workspace and principal. A retry with the same key, route and body replays the stored response with
   `Idempotent-Replayed: true`; a different body or route is `422 idempotency_key_reused`, a retry while the first
-  is running `409 idempotency_in_progress`. `5xx`, `429`, streamed and >1 MiB responses are not stored. Not
+  is running `409 idempotency_in_progress`. `5xx`, `429`, streamed and >1 MiB responses are not stored. A response
+  that carries a secret shown once (a new API key, a webhook's or an http panel's signing secret, a widget's identity
+  secret) is never stored either: the key keeps only that the request succeeded, and a retry answers
+  `409 idempotency_secret_withheld` (with the resource's `Location` when it had one) instead of the secret. Not
   applied to `/v1/auth/*`, `/v1/me/password`, `/v1/me/passkeys/register/*`, `/v1/realtime/token`, inbound, Stripe, widget and public routes.
-- Rate limits: `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` headers.
+- Rate limits: `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` headers. Per credential, 1200 requests a
+  minute and 600 writes. An API key's count is the instance's (Postgres, `auth_throttle`), whichever API process
+  answers; a person's, a visitor's and a customer's count in each API process.
 - Roles: `owner` > `admin` > `agent` > `viewer`. Viewers read only. Settings routes
   (mailboxes, members, api keys, webhooks, automations, sla, business hours, assignment, triage, widget settings, labels, label groups, custom fields, workspace images) need `admin`.
 - API key scopes: `tickets:read`, `tickets:write`, `contacts:read`, `contacts:write`,
@@ -404,7 +409,7 @@ A suspended workspace is listed with its name and nothing else.
 | --- | --- | --- |
 | POST | `/v1/workspaces` | `{name}` → `Workspace` (caller becomes owner; seeds default views, tags, SLA, the default brand with the workspace slug and its widget "Website") |
 | GET/PATCH | `/v1/workspace` | current workspace (`OD-Workspace`); GET → `Workspace`, including effective `mail_available` and optional `mail_disabled_reason`; PATCH admin `{name?, settings?}` → `Workspace`, merges only supplied settings keys, audits `workspace.updated` and publishes `workspace.updated` in the write transaction. `settings.tickets_enabled`, `settings.mail_enabled` and `settings.pages_enabled` default to true when absent and may be changed by workspace admins/owners only. At least one available product must remain enabled (Tickets, Mail while available, or Pages): a patch that would leave none is `422 at_least_one_product_required`. Effective Mail reason is `instance_disabled` when Collab is off on the instance, `plan` when this workspace lacks Collab entitlement, or `workspace_disabled` when its Mail setting is off; otherwise `mail_available` is true and the reason is omitted. |
-| DELETE | `/v1/workspace` | owner + MFA, `{confirm_name}` → 204, removes all workspace data |
+| DELETE | `/v1/workspace` | owner + MFA, `{confirm_name}` → 204, removes all workspace data. A small workspace goes within the request. A large one (more than 10,000 rows among its messages, activities, events and audit log) is closed within the request instead: suspended (its API keys, widget, help center, mail, webhooks and jobs stop, as in contracts/admin.md "Suspend a workspace"), its members, invitations and private team grants removed, so it leaves everyone's list at once; the `core.workspace_purge` job then removes its files and its rows in batches, and finally the workspace (`workspaces.deleting_at` marks it until then). Account deletion and the admin panel's delete take the same path |
 | POST | `/v1/workspace/transfer` | owner + MFA, `{user_id}` |
 | POST | `/v1/workspace/widget-secret/rotate` | admin → `{secret}` (shown once): the default brand's first widget. Any widget: `POST /v1/widgets/{id}/secret/rotate` (contracts/teams.md) |
 | GET | `/v1/members` · PATCH/DELETE `/v1/members/{user_id}` | `{role}` |
@@ -434,8 +439,8 @@ A suspended workspace is listed with its name and nothing else.
 | CRUD | `/v1/integrations`, `/v1/integrations/{id}` | admin users only. Connected products for Ollie (MCP servers); see `contracts/integrations.md`, which also lists `/v1/tickets/{id}/links` and the normalized state on `Link` |
 | CRUD | `/v1/ticket-panels`, `/v1/ticket-panels/{id}` | list: viewer, `tickets:read`; changes: admin users only. Read-only data about a ticket's contact from Shopify or a URL of the workspace's; see `contracts/integrations.md` "Ticket panels", which also lists `/v1/tickets/{id}/panels/{panelId}` |
 | GET | `/v1/audit-logs` | admin, list, optional `?action=&entity_type=` |
-| GET | `/v1/events?since=<seq>&limit=` | `limit` default 500, max 1000 → `{data: Envelope[], latest_seq, resync: bool}`. Members, and API keys with `realtime` or `tickets:read` |
-| POST | `/v1/realtime/token` | → `{token, url, expires_at}` (users and keys with `realtime`) |
+| GET | `/v1/events?since=<seq>&limit=` | `limit` default 500, max 1000 → `{data: Envelope[], latest_seq, resync: bool}`. Members, and API keys with `realtime` or `tickets:read`. An API key (or an OAuth grant) gets in full only the events its scopes read (`tickets:read` ticket events, `contacts:read` contact events, ...; contracts/events.md "Who receives an event"); every other event is its `event.hidden` stand-in, so `seq` stays contiguous. `realtime` alone reads none in full |
+| POST | `/v1/realtime/token` | → `{token, url, expires_at}` (users and keys with `realtime`). An API key's token carries the `events` claim (contracts/tokens.md): its sockets receive the same events in full as its replay |
 | GET | `/v1/me/notification-preferences` | workspace-scoped → `NotificationPreferences` for the caller in this workspace (members, any role) |
 | PATCH | `/v1/me/notification-preferences` | `{email_cadence?, digest_hour?, timezone?, paused_until?: string \| "" /* "" resumes */, types?: [{type, email?, push?, desktop?}], teams?: [{id, notify}] /* at most 200; an id that is not one of the caller's teams changes nothing */}` → `NotificationPreferences`. `types` and `teams` change this workspace only; the rest is account-wide. A cadence change reschedules the emails already waiting. `paused_until` at most 30 days ahead. Unknown types or timezones are `422` |
 | POST | `/v1/me/notification-preferences/resubscribe` | workspace-scoped → `NotificationPreferences`. Restores each type's email choice from before the unsubscribe link was used here and clears `unsubscribed_at`; without one nothing changes. Turning any type's email on with PATCH also clears it |
