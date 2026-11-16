@@ -661,10 +661,10 @@ EOF
         printf 'MAIL_DRIVER=%s\n' "$MAIL_DRIVER_A"
         if [ "$MAIL_DRIVER_A" = smtp ]; then
             printf 'SMTP_HOST=%s\nSMTP_PORT=%s\nSMTP_TLS=%s\nSMTP_USERNAME=%s\nSMTP_PASSWORD=%s\nMAIL_FROM=%s\n' \
-                "$SMTP_HOST_A" "$SMTP_PORT_A" "$SMTP_TLS_A" "$SMTP_USER_A" "$SMTP_PASS_A" "$MAIL_FROM_A"
+                "$(env_value "$SMTP_HOST_A")" "$SMTP_PORT_A" "$SMTP_TLS_A" "$(env_value "$SMTP_USER_A")" "$(env_value "$SMTP_PASS_A")" "$(env_value "$MAIL_FROM_A")"
         fi
     fi
-    [ -n "$INBOUND_DOMAIN_A" ] && printf 'INBOUND_DOMAIN=%s\n' "$INBOUND_DOMAIN_A"
+    [ -n "$INBOUND_DOMAIN_A" ] && printf 'INBOUND_DOMAIN=%s\n' "$(env_value "$INBOUND_DOMAIN_A")"
     PROFILES=$(env_get "$DIR/.env" COMPOSE_PROFILES)
     PROFILES_SET=0
     if [ "$STORAGE_A" = minio ]; then
@@ -733,7 +733,44 @@ ai_values() {
 # ai_set provider anthropic_key openai_key openai_url model fast_model embeddings_driver
 ai_set() {
     printf 'AI_PROVIDER=%s\nANTHROPIC_API_KEY=%s\nOPENAI_API_KEY=%s\nOPENAI_BASE_URL=%s\nAI_MODEL=%s\nAI_FAST_MODEL=%s\nEMBEDDINGS_DRIVER=%s\n' \
-        "$1" "$2" "$3" "$4" "$5" "$6" "$7"
+        "$1" "$(env_value "$2")" "$(env_value "$3")" "$(env_value "$4")" "$(env_value "$5")" "$(env_value "$6")" "$7"
+}
+
+# env_quoted VALUE: Compose would change VALUE written plain in .env: it expands "$",
+# takes " #" as the start of a comment, and reads quotes, backslashes and spaces at
+# the ends its own way.
+env_quoted() {
+    case "$1" in
+        *'$'* | *' #'* | *'"'* | *\\* | ' '* | *' ' | '#'* | "'"*) return 0 ;;
+    esac
+    return 1
+}
+
+# env_value VALUE: VALUE as Docker Compose reads it back from .env: plain, or
+# single-quoted, which Compose takes literally, when plain would change it.
+# check_values refuses what neither form can hold.
+env_value() {
+    if env_quoted "$1"; then printf "'%s'" "$1"; else printf '%s' "$1"; fi
+}
+
+# check_values stops before anything is written when an answer cannot go into .env
+# as typed: a line break, or a single quote beside a character that needs quoting.
+check_values() {
+    for _pair in "SMTP host=$SMTP_HOST_A" "SMTP username=$SMTP_USER_A" "SMTP password=$SMTP_PASS_A" \
+        "From address=$MAIL_FROM_A" "inbound domain=$INBOUND_DOMAIN_A" "AI key=$AI_KEY" "AI URL=$AI_URL" "AI model=$AI_MODEL_A"; do
+        _name=${_pair%%=*}
+        _value=${_pair#*=}
+        case "$_value" in
+            *"
+"*) die "The $_name has a line break, which .env cannot hold." "Type it again on one line." ;;
+            *"'"*)
+                if env_quoted "$_value"; then
+                    die "The $_name has a single quote and a character .env would change (\$, #, a quote or a backslash)." \
+                        "Put it in $DIR/.env by hand, quoted as Docker Compose's .env format describes."
+                fi
+                ;;
+        esac
+    done
 }
 
 # render_env fills the release's env.template: owned keys get this run's
@@ -999,8 +1036,9 @@ AI (optional; asked by --wizard)
   --ollama          Run models locally in an ollama container
                                             OPENDESK_AI=ollama
   --no-ai           Turn AI off             OPENDESK_AI=none
-  --dry-run         Print the .env it would write and stop
-  --print-env       Same, without the banner (for scripts)
+  --dry-run         Print the .env it would write, secrets hidden, and stop
+  --print-env       Print the .env it would write, secrets included, without
+                    the banner (for scripts), and stop
   --force           Install into a non-empty directory this installer did not create
   --no-color        Plain output
   -h, --help        This
@@ -1107,15 +1145,19 @@ main() {
     ask_basics
     [ "$WIZARD" = 1 ] && wizard
     resolve_version
+    check_values
     ensure_secrets
     derive
     fetch_assets
 
     if [ "$DRY_RUN" = 1 ]; then
-        if [ "$PRINT_ENV" = 0 ]; then
-            step "This is the .env it would write to $DIR. Nothing was changed."
+        if [ "$PRINT_ENV" = 1 ]; then
+            render_env
+        else
+            # A look at the settings, for a terminal or a log: no secret values (--print-env has them).
+            step "This is the .env it would write to $DIR, secrets hidden. Nothing was changed."
+            render_env | sed -E 's/^([A-Z0-9_]*(SECRET|PASSWORD|TOKEN|_KEY)[A-Z0-9_]*)=.+$/\1=<hidden>/'
         fi
-        render_env
         return 0
     fi
 
