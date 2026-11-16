@@ -357,7 +357,7 @@ func (p *pass) remove(ctx context.Context, tx pgx.Tx, m *storedMsg) error {
 // still be at the provider (in a folder not read, moved during the pass, or a folder that
 // started over), so it is removed only after orphanPasses passes in a row, and at least
 // orphanGrace, have missed it, and after the provider was asked where it is
-// (relocateOrphans). Gmail mail is never an orphan: archived mail is in no folder.
+// (relocateIMAP, relocateGraph). Gmail mail is never an orphan: archived mail is in no folder.
 const (
 	orphanPasses = 3
 	orphanGrace  = 30 * time.Minute

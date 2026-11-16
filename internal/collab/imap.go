@@ -1104,8 +1104,10 @@ func (s *service) relocateFolder(ctx context.Context, p *pass, c *imapclient.Cli
 		}
 	}
 	list := make([]*storedMsg, 0, len(known))
+	seen := make(map[uuid.UUID]bool, len(known))
 	for _, m := range known {
-		if !slices.Contains(list, m) {
+		if !seen[m.ID] {
+			seen[m.ID] = true
 			list = append(list, m)
 		}
 	}

@@ -368,7 +368,8 @@ func (p *imapProvider) SaveDraft(ctx context.Context, d draftSave) (draftRef, er
 }
 
 // expunge removes messages for good from their folders (\Deleted, then UID EXPUNGE, or
-// EXPUNGE on a server without UIDPLUS). Collab only does this to drafts.
+// EXPUNGE on a server without UIDPLUS when no other message of the folder is marked
+// \Deleted). Collab only does this to drafts.
 func (p *imapProvider) expunge(ctx context.Context, locs []imapLoc) error {
 	if len(locs) == 0 {
 		return nil
@@ -409,7 +410,13 @@ func (p *imapProvider) expunge(ctx context.Context, locs []imapLoc) error {
 		if c.Caps().Has(imap.CapUIDPlus) {
 			err = c.UIDExpunge(set).Close()
 		} else {
-			err = c.Expunge().Close()
+			// EXPUNGE takes every message marked \Deleted: only when no other one of the folder
+			// is (another client's stays as it was; this one stays marked for later).
+			var others *imap.SearchData
+			if others, err = c.UIDSearch(&imap.SearchCriteria{Flag: []imap.Flag{imap.FlagDeleted},
+				Not: []imap.SearchCriteria{{UID: []imap.UIDSet{set}}}}, nil).Wait(); err == nil && len(others.AllUIDs()) == 0 {
+				err = c.Expunge().Close()
+			}
 		}
 		if err != nil {
 			return opError("discarding the draft", err)
