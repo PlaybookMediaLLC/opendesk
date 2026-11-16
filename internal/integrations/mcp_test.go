@@ -28,6 +28,7 @@ type fakeMCP struct {
 	icons  []any // serverInfo.icons
 	mu     sync.Mutex
 	calls  []string
+	keys   []string // _meta idempotency keys of tools/call
 }
 
 func (f *fakeMCP) answer(m rpcMessage) any {
@@ -53,11 +54,15 @@ func (f *fakeMCP) answer(m rpcMessage) any {
 			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{"title": map[string]any{"type": "string"}}}}}}
 	case "tools/call":
 		var p struct {
-			Name      string         `json:"name"`
-			Arguments map[string]any `json:"arguments"`
+			Name      string            `json:"name"`
+			Arguments map[string]any    `json:"arguments"`
+			Meta      map[string]string `json:"_meta"`
 		}
 		raw, _ := json.Marshal(m.Params)
 		_ = json.Unmarshal(raw, &p)
+		f.mu.Lock()
+		f.keys = append(f.keys, p.Meta[IdempotencyMeta])
+		f.mu.Unlock()
 		return map[string]any{"content": []any{map[string]any{"type": "text",
 			"text": fmt.Sprintf("Created %v at https://linear.app/acme/issue/ACM-1", p.Arguments["title"])}}}
 	}
@@ -412,7 +417,9 @@ func TestAskFirstMakesAReadAWrite(t *testing.T) {
 }
 
 func TestAutoToolsRunOnlyWritesAndAskFirstWins(t *testing.T) {
-	x := &row{Tools: []StoredTool{{Name: "fetch", ReadOnly: true}, {Name: "search", ReadOnly: true}, {Name: "create"}, {Name: "close"}, {Name: "post"}},
+	no := false
+	safe := func(name string) StoredTool { return StoredTool{Name: name, DestructiveHint: &no, OpenWorldHint: &no} }
+	x := &row{Tools: []StoredTool{{Name: "fetch", ReadOnly: true}, {Name: "search", ReadOnly: true}, safe("create"), safe("close"), safe("post")},
 		AskTools: []string{"search", "close"}, AutoTools: []string{"fetch", "search", "create", "close"}}
 	// fetch: a lookup already; search: asks first; create: auto; close: on both lists, ask first wins; post: not listed.
 	for name, want := range map[string]bool{"fetch": false, "search": false, "create": true, "close": false, "post": false} {
@@ -425,6 +432,64 @@ func TestAutoToolsRunOnlyWritesAndAskFirstWins(t *testing.T) {
 		if tl.AutoRun != (tl.Name == "create") {
 			t.Errorf("api %s auto_run = %v", tl.Name, tl.AutoRun)
 		}
+	}
+}
+
+func TestAutoToolsNeedHarmlessClosedWorldAnnotations(t *testing.T) {
+	yes, no := true, false
+	x := &row{Tools: []StoredTool{
+		{Name: "bare"}, // no annotations: destructive and open-world by default
+		{Name: "destructive", DestructiveHint: &yes, OpenWorldHint: &no},
+		{Name: "open", DestructiveHint: &no},
+		{Name: "open_true", DestructiveHint: &no, OpenWorldHint: &yes},
+		{Name: "closed", DestructiveHint: &no, OpenWorldHint: &no},
+	}, AutoTools: []string{"bare", "destructive", "open", "open_true", "closed"}}
+	for _, tl := range x.Tools {
+		want := tl.Name == "closed"
+		if got := x.autoRun(tl); got != want {
+			t.Errorf("autoRun(%s) = %v, want %v", tl.Name, got, want)
+		}
+	}
+	for _, tl := range x.api().Tools {
+		if tl.MayAutoRun != (tl.Name == "closed") || tl.AutoRun != (tl.Name == "closed") {
+			t.Errorf("api %s = %+v", tl.Name, tl)
+		}
+		if tl.Name == "bare" && (!tl.Destructive || !tl.OpenWorld) {
+			t.Errorf("bare = %+v, want destructive and open-world", tl)
+		}
+	}
+	out := storedTools([]RemoteTool{{Name: "post", InputSchema: json.RawMessage(`{"type":"object"}`),
+		Annotations: &struct {
+			Title           string `json:"title,omitempty"`
+			ReadOnlyHint    *bool  `json:"readOnlyHint,omitempty"`
+			DestructiveHint *bool  `json:"destructiveHint,omitempty"`
+			OpenWorldHint   *bool  `json:"openWorldHint,omitempty"`
+		}{DestructiveHint: &no, OpenWorldHint: &no}}})
+	if len(out) != 1 || out[0].Destructive() || out[0].OpenWorld() {
+		t.Fatalf("stored = %+v", out)
+	}
+}
+
+func TestCallCarriesIdempotencyKey(t *testing.T) {
+	f := &fakeMCP{}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	s := newSession(http.DefaultClient, srv.URL, "")
+	if err := s.open(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CallToolKeyed(ctx, "create_issue", json.RawMessage(`{"title":"A"}`), "assistant-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CallTool(ctx, "create_issue", json.RawMessage(`{"title":"B"}`)); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !slices.Equal(f.keys, []string{"assistant-1", ""}) {
+		t.Fatalf("keys = %q", f.keys)
 	}
 }
 

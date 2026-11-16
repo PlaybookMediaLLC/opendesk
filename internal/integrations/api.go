@@ -67,7 +67,13 @@ type ToolInfo struct {
 	ReadOnlyHint bool `json:"read_only_hint" doc:"The server marks the tool read-only (its readOnlyHint)"`
 	AskFirst     bool `json:"ask_first" doc:"An admin set it to wait for approval (ask_tools)"`
 	AutoRun      bool `json:"auto_run" doc:"A write that runs without the user's approval: on auto_tools and not on ask_tools"`
-	Enabled      bool `json:"enabled"`
+	// MayAutoRun: the server marks the write neither destructive nor open-world, so auto_tools can apply to it.
+	MayAutoRun  bool `json:"may_auto_run" doc:"A write its server marks neither destructive nor open-world: only such a write runs without approval when on auto_tools"`
+	Destructive bool `json:"destructive" doc:"A write whose server marks it destructive, or sends no destructiveHint"`
+	OpenWorld   bool `json:"open_world" doc:"The server does not mark the tool as staying in a closed system (openWorldHint true or absent)"`
+	Enabled     bool `json:"enabled"`
+	// Withheld: enabled, but past the connected tools Ollie is offered in one run (set only in the list).
+	Withheld bool `json:"withheld" doc:"Enabled and connected, but past the 120 connected tools Ollie is offered in one run"`
 }
 
 func (x *row) api() Integration {
@@ -80,6 +86,7 @@ func (x *row) api() Integration {
 	for _, t := range x.Tools {
 		out.Tools = append(out.Tools, ToolInfo{Name: t.Name, Title: firstNonEmpty(t.Title, humanize(t.Name)), Description: t.Description,
 			ReadOnly: x.readOnly(t), ReadOnlyHint: t.ReadOnly, AskFirst: slices.Contains(x.AskTools, t.Name), AutoRun: x.autoRun(t),
+			MayAutoRun: t.mayAutoRun(), Destructive: t.Destructive(), OpenWorld: t.OpenWorld(),
 			Enabled: !slices.Contains(x.DisabledTools, t.Name)})
 	}
 	return out
@@ -206,8 +213,23 @@ func (s *Service) registerRoutes(api huma.API, r chi.Router) {
 				}
 			}{}
 			out.Body.Data = []Integration{}
+			offered := 0
 			for _, x := range rows {
-				out.Body.Data = append(out.Body.Data, x.api())
+				it := x.api()
+				// The same order and rule as Tools: tools past maxOffered are not offered.
+				if x.Enabled && x.Status == "connected" {
+					for i := range it.Tools {
+						if !it.Tools[i].Enabled {
+							continue
+						}
+						if offered >= maxOffered {
+							it.Tools[i].Withheld = true
+							continue
+						}
+						offered++
+					}
+				}
+				out.Body.Data = append(out.Body.Data, it)
 			}
 			return out, nil
 		})
