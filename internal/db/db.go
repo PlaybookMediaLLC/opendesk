@@ -58,7 +58,11 @@ func Open(ctx context.Context, pooledURL, directURL string) (*DB, error) {
 		if err != nil {
 			return nil, fmt.Errorf("parse DATABASE_URL_DIRECT: %w", err)
 		}
-		directCfg.MaxConns = 10
+		// River, the event relay's LISTEN and flushes and the prune job share these. A
+		// pool_max_conns in DATABASE_URL_DIRECT sizes it; without one it holds 10.
+		if !strings.Contains(directURL, "pool_max_conns") {
+			directCfg.MaxConns = 10
+		}
 		directCfg.AfterConnect = scanUTC
 		if direct, err = pgxpool.NewWithConfig(ctx, directCfg); err != nil {
 			return nil, err
