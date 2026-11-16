@@ -306,6 +306,7 @@ export function ToolList({
                 </span>
               </div>
               {tl.description && <p className="mt-0.5 line-clamp-1 text-[11.5px] text-fg-3">{tl.description}</p>}
+              {tl.withheld && <p className="mt-0.5 text-[11.5px] text-tone-amber">{t("integrations.tools.withheld")}</p>}
             </div>
             {tl.read_only_hint ? (
               <label className={cn("flex shrink-0 items-center gap-1.5 text-[11.5px] text-fg-3", !disabled && tl.enabled && "cursor-pointer hover:text-fg-2", !tl.enabled && "opacity-55")}>
@@ -318,11 +319,19 @@ export function ToolList({
                 />
               </label>
             ) : (
-              <label className={cn("flex shrink-0 items-center gap-1.5 text-[11.5px] text-fg-3", !disabled && tl.enabled && "cursor-pointer hover:text-fg-2", !tl.enabled && "opacity-55")}>
+              <label
+                title={tl.may_auto_run ? undefined : t("integrations.tools.autoRunBlocked")}
+                className={cn(
+                  "flex shrink-0 items-center gap-1.5 text-[11.5px] text-fg-3",
+                  !disabled && tl.enabled && tl.may_auto_run && "cursor-pointer hover:text-fg-2",
+                  (!tl.enabled || !tl.may_auto_run) && "opacity-55",
+                )}
+              >
                 {t("integrations.tools.autoRun")}
                 <Switch
                   checked={tl.auto_run}
-                  disabled={disabled || !tl.enabled}
+                  // Only a write its server marks harmless and closed-world can run without asking.
+                  disabled={disabled || !tl.enabled || !tl.may_auto_run}
                   onCheckedChange={(on) => onAuto(tl.name, on)}
                   aria-label={t("integrations.tools.autoRunFor", { name: tl.title })}
                 />

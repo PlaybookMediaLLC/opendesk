@@ -447,6 +447,17 @@ function AgentBubble({
               <span className={cn("inline-flex h-[18px] items-center rounded-xs px-1.5 text-[10.5px] font-medium", tone.amber.chip)}>{t("playground.actionPending")}</span>
             </div>
             <div className="px-3 py-2 text-[12px] leading-[18px] text-fg-2">{turn.action.summary}</div>
+            {!!turn.action.fields?.length && (
+              <dl className="grid gap-0.5 px-3 pb-2 text-[12px] leading-[17px]">
+                {turn.action.fields.map((f, i) => (
+                  <div key={i} className="grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)] gap-2">
+                    <dt className="mono truncate text-fg-3">{f.label}</dt>
+                    <dd className="whitespace-pre-wrap text-fg wrap-anywhere">{f.value}</dd>
+                  </div>
+                ))}
+                {!!turn.action.omitted && <div className="text-fg-3">+{turn.action.omitted}</div>}
+              </dl>
+            )}
             <div className="flex items-center gap-2 border-t border-line-soft bg-sunken px-3 py-1.5 text-[11.5px] text-fg-3">
               <span className="mono truncate">{turn.action.tool}</span>
               <span className="ml-auto">{t("playground.actionNote")}</span>

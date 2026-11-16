@@ -306,6 +306,18 @@ type AIAction struct {
 	Summary string    `json:"summary"`
 	Status  string    `json:"status" enum:"pending,confirmed,declined,expired,failed"`
 	Tool    string    `json:"tool"`
+	// Fields are the arguments the tool runs with, rendered from the call itself (not the
+	// model's summary), so the visitor confirms what actually runs. Omitted counts the
+	// arguments left out past the first 12.
+	Fields  []AIActionField `json:"fields,omitempty"`
+	Omitted int             `json:"omitted,omitempty"`
+}
+
+// AIActionField is one argument of an action card: its label (the schema's title, else the
+// name) and its value as text, at most 300 characters.
+type AIActionField struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
 }
 
 type ActivityActor struct {

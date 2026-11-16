@@ -334,6 +334,10 @@ a.chip:hover { border-color: var(--line-2); }
 .action-need { font-size: 11px; color: var(--fg-4); white-space: nowrap; }
 .action-title { margin-top: 6px; font-size: 13.5px; line-height: 19px; font-weight: 600; letter-spacing: -.01em; overflow-wrap: anywhere; }
 .action-sum { margin-top: 2px; font-size: 12.5px; line-height: 18px; color: var(--fg-2); overflow-wrap: anywhere; }
+.action-fields { margin: 8px 0 0; display: grid; gap: 3px; font-size: 12px; line-height: 17px; }
+.action-fields > div { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 8px; }
+.action-fields dt { color: var(--fg-3); overflow-wrap: anywhere; }
+.action-fields dd { margin: 0; color: var(--fg); font-weight: 500; overflow-wrap: anywhere; white-space: pre-wrap; }
 .action-btns { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows .22s var(--ease), opacity .15s, margin-top .22s var(--ease); }
 .action-btns[data-open] { grid-template-rows: 1fr; opacity: 1; margin-top: 10px; }
 .action-btns > div { min-height: 0; overflow: hidden; display: flex; gap: 6px; justify-content: flex-end; }

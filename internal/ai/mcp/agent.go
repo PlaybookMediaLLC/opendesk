@@ -19,15 +19,17 @@ func (t toolbox) Tools(ctx context.Context, wid uuid.UUID, verified bool) ([]ai.
 	}
 	out := make([]ai.AgentTool, 0, len(tools))
 	for _, tl := range tools {
+		// A tool that is not read-only always waits for the visitor's confirmation: the
+		// conversation holds the visitor's own words (contracts/agent.md).
 		out = append(out, ai.AgentTool{ServerID: tl.ServerID, ServerSlug: tl.ServerSlug, Name: tl.Name, Title: tl.Title,
-			Description: tl.Description, Schema: tl.InputSchema, ReadOnly: tl.ReadOnly, Confirm: tl.Policy == "confirm"})
+			Description: tl.Description, Schema: tl.InputSchema, ReadOnly: tl.ReadOnly, Confirm: tl.Policy == PolicyConfirm || !tl.ReadOnly})
 	}
 	return out, nil
 }
 
 func (t toolbox) Call(ctx context.Context, wid, serverID uuid.UUID, tool string, args json.RawMessage, v ai.AgentVisitor) (string, bool, error) {
 	res, err := t.r.Call(ctx, wid, serverID, tool, args, Visitor{Verified: v.Verified, UserID: v.UserID, Email: v.Email,
-		Name: v.Name, ContactID: v.ContactID, ConversationID: v.ConversationID})
+		Name: v.Name, ContactID: v.ContactID, ConversationID: v.ConversationID, Test: v.Test, IdempotencyKey: v.IdempotencyKey})
 	if err != nil {
 		return "", false, err
 	}

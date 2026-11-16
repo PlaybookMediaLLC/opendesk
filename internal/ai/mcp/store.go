@@ -103,12 +103,13 @@ type toolSetting struct {
 	VerifiedOnly bool   `json:"verified_only"`
 }
 
-// defaultSetting: read-only tools run on their own, others are off and need confirmation.
+// defaultSetting: read-only tools run on their own; others are off, need confirmation and
+// are offered only in verified sessions.
 func defaultSetting(t cachedTool) toolSetting {
 	if t.ReadOnly {
 		return toolSetting{Enabled: true, Policy: PolicyAuto}
 	}
-	return toolSetting{Enabled: false, Policy: PolicyConfirm}
+	return toolSetting{Enabled: false, Policy: PolicyConfirm, VerifiedOnly: true}
 }
 
 // oauthMeta is the OAuth state without secrets.
@@ -207,9 +208,11 @@ func (s *server) tool(name string) (cachedTool, bool) {
 	return cachedTool{}, false
 }
 
+// setting is the admin's choice for a tool, or its default. A tool that is not read-only
+// always needs confirmation, whatever was stored.
 func (s *server) setting(t cachedTool) toolSetting {
 	if st, ok := s.Settings[t.Name]; ok {
-		if st.Policy != PolicyAuto && st.Policy != PolicyConfirm {
+		if st.Policy != PolicyAuto && st.Policy != PolicyConfirm || !t.ReadOnly {
 			st.Policy = PolicyConfirm
 		}
 		return st

@@ -385,7 +385,9 @@ func schemaMap(v any) map[string]any {
 
 // call runs a tool on s. It retries once, on a new connection, only when the call
 // cannot have run: the server refused the credential (an OAuth token is refreshed
-// first), the session was gone or closed, or the tool is read-only.
+// first) or the session was gone. A read-only tool is also retried when the connection
+// closed; a write is not, since the server may have run it already. Every attempt
+// carries the same idempotency key, when the caller gave one.
 func (r *Registry) call(ctx context.Context, s *server, tool string, args json.RawMessage, v Visitor) (Result, error) {
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
@@ -421,7 +423,7 @@ func (r *Registry) call(ctx context.Context, s *server, tool string, args json.R
 			return Result{Text: "The tool's answer was too large.", IsError: true}, nil
 		}
 		t, _ := s.tool(tool)
-		safe := st.authFail || t.ReadOnly || errors.Is(err, sdk.ErrSessionMissing) || errors.Is(err, sdk.ErrConnectionClosed)
+		safe := st.authFail || errors.Is(err, sdk.ErrSessionMissing) || (t.ReadOnly && errors.Is(err, sdk.ErrConnectionClosed))
 		if attempt > 0 || !safe {
 			return Result{}, r.unavailable(ctx, s, classify(ctx, err, st, s.AuthKind))
 		}
@@ -455,7 +457,12 @@ func (r *Registry) unavailable(ctx context.Context, s *server, err error) error 
 	return fmt.Errorf("%w: %w", ErrUnavailable, err)
 }
 
+// callMeta is the _meta of a call. A test call says so ("opendesk/test": true) and never
+// carries a verified identity, whatever the test asked for.
 func callMeta(s *server, v Visitor) sdk.Meta {
+	if v.Test {
+		v.Verified = false
+	}
 	visitor := map[string]any{"verified": v.Verified}
 	if v.ContactID != uuid.Nil {
 		visitor["contact_id"] = v.ContactID.String()
@@ -474,10 +481,17 @@ func callMeta(s *server, v Visitor) sdk.Meta {
 	if v.Name != "" {
 		visitor["name"] = v.Name
 	}
-	return sdk.Meta{
+	meta := sdk.Meta{
 		"opendesk/visitor":   visitor,
 		"opendesk/workspace": map[string]any{"id": s.WorkspaceID.String(), "name": s.WorkspaceName},
 	}
+	if v.Test {
+		meta["opendesk/test"] = true
+	}
+	if v.IdempotencyKey != "" {
+		meta["opendesk/idempotency_key"] = v.IdempotencyKey
+	}
+	return meta
 }
 
 // toResult is the text the model sees: text content, then short markers for other

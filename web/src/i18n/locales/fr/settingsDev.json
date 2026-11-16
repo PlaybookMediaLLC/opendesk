@@ -585,7 +585,9 @@
       "more_one": "Afficher {{count}} de plus",
       "more_other": "Afficher {{count}} de plus",
       "more_many": "Afficher {{count}} de plus",
-      "fewer": "Afficher moins"
+      "fewer": "Afficher moins",
+      "autoRunBlocked": "S’exécute sans demander seulement si son serveur le marque comme non destructif et restant dans un système fermé.",
+      "withheld": "Non proposé : Ollie utilise au plus 120 outils connectés à la fois. Désactivez-en d’autres pour le proposer."
     },
     "category": {
       "all": "Toutes",

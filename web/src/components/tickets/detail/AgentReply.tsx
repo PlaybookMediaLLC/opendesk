@@ -36,6 +36,17 @@ export function AiActionCard({ action }: { action: AIAction }) {
       <p className="px-3 py-2 text-[12.5px] leading-[18px] text-fg-2" data-ph-mask>
         {action.summary}
       </p>
+      {!!action.fields?.length && (
+        <dl className="grid gap-0.5 px-3 pb-2 text-[12px] leading-[17px]" data-ph-mask>
+          {action.fields.map((f, i) => (
+            <div key={i} className="grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)] gap-2">
+              <dt className="mono truncate text-fg-3">{f.label}</dt>
+              <dd className="whitespace-pre-wrap text-fg wrap-anywhere">{f.value}</dd>
+            </div>
+          ))}
+          {!!action.omitted && <div className="text-fg-3">+{action.omitted}</div>}
+        </dl>
+      )}
       <div className="flex items-center gap-2 border-t border-line-soft bg-sunken px-3 py-1.5 text-[11px] text-fg-3">
         <Wrench className="size-3 shrink-0" />
         <span className="mono truncate">{action.tool}</span>

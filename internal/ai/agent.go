@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"html"
@@ -13,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/useopendesk/opendesk/internal/ai/bots"
+	"github.com/useopendesk/opendesk/internal/domain"
 	"github.com/useopendesk/opendesk/internal/helpdesk/hd"
 	"github.com/useopendesk/opendesk/internal/plan"
 )
@@ -293,7 +295,7 @@ func (s *Service) runAgent(ctx context.Context, in agentInput, ev agentEvents) (
 				if ev.tool != nil {
 					ev.tool(name, "running", "")
 				}
-				out, isErr := s.callAgentTool(ctx, in, sp.tool, call.Input)
+				out, isErr := s.callAgentTool(ctx, in, sp.tool, call.Input, "")
 				res.ToolsUsed = append(res.ToolsUsed, name)
 				if ev.tool != nil {
 					status := "done"
@@ -388,10 +390,13 @@ func cloneSchema(in map[string]any) map[string]any {
 	return out
 }
 
-// splitSummary removes the agent's _summary from a confirm tool's arguments.
+// splitSummary removes the agent's _summary from a confirm tool's arguments. Numbers keep
+// their exact text.
 func splitSummary(in json.RawMessage) (json.RawMessage, string) {
 	var m map[string]any
-	if json.Unmarshal(in, &m) != nil {
+	dec := json.NewDecoder(bytes.NewReader(in))
+	dec.UseNumber()
+	if dec.Decode(&m) != nil || m == nil {
 		return json.RawMessage("{}"), ""
 	}
 	summary, _ := m["_summary"].(string)
@@ -400,14 +405,74 @@ func splitSummary(in json.RawMessage) (json.RawMessage, string) {
 	return raw, clip(strings.Join(strings.Fields(summary), " "), 300)
 }
 
-// callAgentTool runs a workspace tool and records the call (name and outcome only).
-func (s *Service) callAgentTool(ctx context.Context, in agentInput, t AgentTool, args json.RawMessage) (string, bool) {
+// maxActionFields bounds the arguments an action card lists.
+const maxActionFields = 12
+
+// actionFields renders a confirm tool call's arguments for its card: each top-level
+// argument, by name, labelled with the schema's title when it has one, its value as text.
+// It reads the arguments the call runs with, never the model's summary. omitted counts
+// the arguments past maxActionFields.
+func actionFields(schema map[string]any, args json.RawMessage) ([]domain.AIActionField, int) {
+	var m map[string]any
+	dec := json.NewDecoder(bytes.NewReader(args))
+	dec.UseNumber()
+	if dec.Decode(&m) != nil || len(m) == 0 {
+		return []domain.AIActionField{}, 0
+	}
+	props, _ := schema["properties"].(map[string]any)
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	out := make([]domain.AIActionField, 0, min(len(keys), maxActionFields))
+	for _, k := range keys {
+		if len(out) == maxActionFields {
+			break
+		}
+		label := k
+		if p, ok := props[k].(map[string]any); ok {
+			if t, ok := p["title"].(string); ok && strings.TrimSpace(t) != "" {
+				label = strings.TrimSpace(t)
+			}
+		}
+		out = append(out, domain.AIActionField{Label: clip(label, 80), Value: clip(fieldText(m[k]), 300)})
+	}
+	return out, len(keys) - len(out)
+}
+
+// fieldText is an argument's value as the visitor reads it: text as it is, numbers as
+// written, yes or no, empty for null, anything else as compact JSON.
+func fieldText(v any) string {
+	switch t := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return t
+	case json.Number:
+		return t.String()
+	case bool:
+		if t {
+			return "yes"
+		}
+		return "no"
+	default:
+		raw, _ := json.Marshal(t)
+		return string(raw)
+	}
+}
+
+// callAgentTool runs a workspace tool and records the call (name and outcome only). key is
+// a confirmed action's idempotency key, "" for a read.
+func (s *Service) callAgentTool(ctx context.Context, in agentInput, t AgentTool, args json.RawMessage, key string) (string, bool) {
 	tb := s.agentToolbox()
 	if tb == nil {
 		return "This tool is not available.", true
 	}
 	start := time.Now()
-	out, isErr, err := tb.Call(ctx, in.wid, t.ServerID, t.Name, args, in.visitor)
+	v := in.visitor
+	v.IdempotencyKey = key
+	out, isErr, err := tb.Call(ctx, in.wid, t.ServerID, t.Name, args, v)
 	if err != nil {
 		out, isErr = "The tool could not be reached. Tell the visitor you could not check this right now.", true
 	}

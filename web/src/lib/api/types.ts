@@ -601,7 +601,17 @@ export type Thread = {
 };
 /** contracts/agent.md "Visitor actions". */
 export type AIActionStatus = "pending" | "confirmed" | "declined" | "expired" | "failed";
-export type AIAction = { id: string; title: string; summary: string; status: AIActionStatus; tool: string };
+export type AIAction = {
+  id: string;
+  title: string;
+  summary: string;
+  status: AIActionStatus;
+  tool: string;
+  /** The arguments the tool runs with, rendered from the call itself (not the agent's summary). */
+  fields?: { label: string; value: string }[];
+  /** Arguments left out past the first 12. */
+  omitted?: number;
+};
 export type ActivityType =
   | "status_changed"
   | "priority_changed"
@@ -1219,7 +1229,15 @@ export type IntegrationTool = {
   ask_first: boolean;
   /** A write an admin lets run without asking (auto_tools); ask_first wins over it. */
   auto_run: boolean;
+  /** Its server marks the write neither destructive nor open-world: only such a write can run without asking. */
+  may_auto_run: boolean;
+  /** A write whose server marks it destructive, or does not say. */
+  destructive: boolean;
+  /** The server does not mark the tool as staying in a closed system. */
+  open_world: boolean;
   enabled: boolean;
+  /** Enabled, but past the 120 connected tools Ollie is offered at once (in the list only). */
+  withheld: boolean;
 };
 export type Integration = {
   id: string;
@@ -2678,7 +2696,8 @@ export type PlaygroundDone = {
   text_html: string;
   sources: AgentSource[];
   handoff: boolean;
-  action: { tool: string; title: string; summary: string } | null;
+  /** fields: the arguments the tool would run with, from the call itself. */
+  action: { tool: string; title: string; summary: string; fields?: { label: string; value: string }[]; omitted?: number } | null;
   /** The procedures the agent read for this reply. */
   procedures: ProcedureRef[];
   /** US dollars. */

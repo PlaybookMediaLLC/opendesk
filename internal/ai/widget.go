@@ -252,7 +252,7 @@ func (s *Service) WidgetAction(ctx context.Context, a jobs.AIWidgetActionArgs) e
 			s.d.Log.Warn("widget action arguments unreadable", "action_id", a.ActionID)
 		} else if tb := s.agentToolbox(); tb != nil {
 			in := ac.input(a.WorkspaceID, a.TicketID, "")
-			text, isErr := s.callAgentTool(ctx, in, AgentTool{ServerID: serverID, Name: tool, Title: title}, args)
+			text, isErr := s.callAgentTool(ctx, in, AgentTool{ServerID: serverID, Name: tool, Title: title}, args, "widget-action-"+a.ActionID.String())
 			out = text
 			if !isErr {
 				final = "confirmed"
@@ -442,8 +442,10 @@ func (s *Service) postReply(ctx context.Context, in agentInput, trigger uuid.UUI
 			var aid uuid.UUID
 			if res.Action != nil {
 				aid = uuid.New()
+				// The card shows the arguments the call runs with, from the call itself.
+				fields, omitted := actionFields(res.Action.Tool.Schema, res.Action.Args)
 				nm.AIAction = &domain.AIAction{ID: aid, Title: clip(firstNonEmpty(res.Action.Tool.Title, res.Action.Tool.displayName()), 120),
-					Summary: res.Action.Summary, Status: "pending", Tool: res.Action.Tool.displayName()}
+					Summary: res.Action.Summary, Status: "pending", Tool: res.Action.Tool.displayName(), Fields: fields, Omitted: omitted}
 			}
 			m, err := domain.AddMessage(ctx, tx, s.d.Jobs, nm)
 			if err != nil {

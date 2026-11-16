@@ -345,11 +345,11 @@
     "enableTool": "Agent {{name}} nutzen lassen",
     "policy": {
       "auto": "Automatisch",
-      "confirm": "Besucher bestätigen lassen"
+      "confirm": "Besucher bestätigen lassen",
+      "alwaysConfirm": "Tools, die etwas ändern, bitten den Besucher immer um Bestätigung und zeigen die Angaben, mit denen sie laufen."
     },
     "verifiedOnly": "Nur bestätigte Besucher",
     "verifiedOnlyHint": "Nur angeboten, wenn deine Website die Identität des Besuchers im Widget bestätigt hat.",
-    "autoWarning": "Dieses Tool ändert Daten und läuft, ohne den Besucher zu fragen.",
     "addTitle": "MCP-Server verbinden",
     "editTitle": "Verbindung bearbeiten",
     "addDescription": "Ein entfernter MCP-Server über HTTPS. opendesk listet seine Tools auf und sendet bei jedem Aufruf mit, wer der Besucher ist.",
@@ -395,13 +395,15 @@
       "choose": "Auswählen",
       "badJson": "Das ist kein gültiges JSON",
       "notObject": "Argumente sind ein JSON-Objekt, z. B. {}",
-      "visitorEmail": "E-Mail des Besuchers (optional)",
-      "verified": "Bestätigt",
       "run": "Ausführen",
       "error": "Tool konnte nicht ausgeführt werden",
       "failed": "Das Tool hat mit einem Fehler geantwortet",
       "ok": "Ergebnis",
-      "destructiveNote": "Das wird wirklich ausgeführt, unabhängig von der Richtlinie."
+      "destructiveNote": "Das wird wirklich ausgeführt, unabhängig von der Richtlinie.",
+      "testCall": "Läuft als Testaufruf: Ihr Server erhält opendesk/test und nie einen verifizierten Besucher.",
+      "confirmTitle": "Dieses Tool wirklich ausführen?",
+      "confirmText": "Dieses Tool braucht eine Bestätigung. Es läuft einmal, wirklich, mit diesen Argumenten.",
+      "confirmRun": "Ausführen"
     },
     "clients": {
       "title": "KI-Clients mit opendesk verbinden",

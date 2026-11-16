@@ -352,11 +352,11 @@
     "enableTool": "Autoriser l’agent à utiliser {{name}}",
     "policy": {
       "auto": "Automatique",
-      "confirm": "Demander confirmation au visiteur"
+      "confirm": "Demander confirmation au visiteur",
+      "alwaysConfirm": "Les outils qui modifient quelque chose demandent toujours au visiteur de confirmer, en montrant les détails avec lesquels ils s’exécutent."
     },
     "verifiedOnly": "Visiteurs vérifiés uniquement",
     "verifiedOnlyHint": "Proposé uniquement lorsque votre site a vérifié l’identité du visiteur dans le widget.",
-    "autoWarning": "Cet outil apporte des modifications sans demander l’accord du visiteur.",
     "addTitle": "Connecter un serveur MCP",
     "editTitle": "Modifier la connexion",
     "addDescription": "Un serveur MCP distant en HTTPS. opendesk répertorie ses outils et transmet l’identité du visiteur à chaque appel.",
@@ -402,13 +402,15 @@
       "choose": "Choisir",
       "badJson": "Ce JSON n’est pas valide",
       "notObject": "Les arguments doivent être un objet JSON, comme {}",
-      "visitorEmail": "E-mail du visiteur (facultatif)",
-      "verified": "Vérifié",
       "run": "Exécuter",
       "error": "Impossible d’exécuter l’outil",
       "failed": "L’outil a renvoyé une erreur",
       "ok": "Résultat",
-      "destructiveNote": "L’exécution est réelle, quelle que soit la règle de confirmation."
+      "destructiveNote": "L’exécution est réelle, quelle que soit la règle de confirmation.",
+      "testCall": "S’exécute comme un appel de test : votre serveur reçoit opendesk/test et jamais un visiteur vérifié.",
+      "confirmTitle": "Exécuter cet outil pour de vrai ?",
+      "confirmText": "Cet outil demande une confirmation. Il s’exécute une fois, pour de vrai, avec ces arguments.",
+      "confirmRun": "L’exécuter"
     },
     "clients": {
       "title": "Connecter des clients IA à opendesk",

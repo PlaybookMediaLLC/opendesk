@@ -345,11 +345,11 @@
     "enableTool": "Let the agent use {{name}}",
     "policy": {
       "auto": "Auto",
-      "confirm": "Ask visitor to confirm"
+      "confirm": "Ask visitor to confirm",
+      "alwaysConfirm": "Tools that make changes always ask the visitor to confirm, showing the details they run with."
     },
     "verifiedOnly": "Verified visitors only",
     "verifiedOnlyHint": "Offered only when your site verified the visitor's identity in the widget.",
-    "autoWarning": "This tool makes changes and runs without asking the visitor.",
     "addTitle": "Connect an MCP server",
     "editTitle": "Edit connection",
     "addDescription": "A remote MCP server over HTTPS. opendesk lists its tools and sends who the visitor is with every call.",
@@ -395,13 +395,15 @@
       "choose": "Choose",
       "badJson": "This isn't valid JSON",
       "notObject": "Arguments are a JSON object, like {}",
-      "visitorEmail": "Visitor email (optional)",
-      "verified": "Verified",
       "run": "Run",
       "error": "Couldn't run the tool",
       "failed": "The tool answered with an error",
       "ok": "Result",
-      "destructiveNote": "This runs for real, whatever the policy."
+      "destructiveNote": "This runs for real, whatever the policy.",
+      "testCall": "Runs as a test call: your server gets opendesk/test and never a verified visitor.",
+      "confirmTitle": "Run this tool for real?",
+      "confirmText": "This tool needs confirmation. It runs once, for real, with these arguments.",
+      "confirmRun": "Run it"
     },
     "clients": {
       "title": "Connect AI clients to opendesk",

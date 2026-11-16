@@ -131,7 +131,13 @@ export type AIAction = {
   status: AIActionStatus;
   /** Display name of the tool. */
   tool: string;
+  /** The arguments the tool runs with, rendered from the call itself (not the agent's summary). */
+  fields?: AIActionField[];
+  /** Arguments left out past the first 12. */
+  omitted?: number;
 };
+
+export type AIActionField = { label: string; value: string };
 
 export type Rating = "up" | "down";
 

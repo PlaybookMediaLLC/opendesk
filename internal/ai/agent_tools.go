@@ -32,6 +32,11 @@ type AgentVisitor struct {
 	Name           string
 	ContactID      uuid.UUID
 	ConversationID uuid.UUID
+	// Test marks a made-up conversation (the playground, agent test runs): tools get
+	// _meta "opendesk/test": true and never a verified identity (contracts/agent.md).
+	Test bool
+	// IdempotencyKey is the key of a confirmed action, sent with every attempt of its call.
+	IdempotencyKey string
 }
 
 // AgentToolbox lists and runs a workspace's tools. internal/ai/mcp provides it and

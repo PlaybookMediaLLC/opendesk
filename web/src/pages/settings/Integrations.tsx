@@ -57,7 +57,7 @@ function ConnectedRow({ x, admin }: { x: Integration; admin: boolean }) {
           next = { ...next, ask_first: ask, read_only: tl.read_only_hint && !ask, auto_run: next.auto_run && !ask };
         }
         // Only a write runs without asking, and asking first wins.
-        if (b.auto_tools) next = { ...next, auto_run: b.auto_tools.includes(tl.name) && !next.read_only && !next.ask_first };
+        if (b.auto_tools) next = { ...next, auto_run: b.auto_tools.includes(tl.name) && !next.read_only && !next.ask_first && tl.may_auto_run };
         return next;
       });
       upsertInList(qc, qk.integrations, { ...x, enabled: b.enabled ?? x.enabled, tools });

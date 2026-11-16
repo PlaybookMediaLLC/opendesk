@@ -53,7 +53,21 @@ const catalog: (IntegrationProvider & { hosts: string[] })[] = [
   { key: "zapier", name: "Zapier", category: "automation", description: "Reach thousands of apps through the actions you enable in Zapier.", url: "https://mcp.zapier.com/api/mcp/mcp", auth: "oauth", hosts: [], starters: [] },
 ];
 
-const tool = (name: string, title: string, description: string, read_only: boolean): IntegrationTool => ({ name, title, description, read_only, read_only_hint: read_only, ask_first: false, auto_run: false, enabled: true });
+// The mock's writes are marked harmless and closed-world, so they can run without asking.
+const tool = (name: string, title: string, description: string, read_only: boolean): IntegrationTool => ({
+  name,
+  title,
+  description,
+  read_only,
+  read_only_hint: read_only,
+  ask_first: false,
+  auto_run: false,
+  may_auto_run: !read_only,
+  destructive: false,
+  open_world: false,
+  enabled: true,
+  withheld: false,
+});
 
 const toolsFor: Record<string, IntegrationTool[]> = {
   linear: [

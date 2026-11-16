@@ -575,7 +575,9 @@
       "autoRunFor": "Ollie {{name}} ohne Genehmigung nutzen lassen",
       "more_one": "{{count}} weiteres anzeigen",
       "more_other": "{{count}} weitere anzeigen",
-      "fewer": "Weniger anzeigen"
+      "fewer": "Weniger anzeigen",
+      "autoRunBlocked": "Läuft nur ohne Nachfrage, wenn sein Server es als nicht destruktiv und in einem geschlossenen System bleibend kennzeichnet.",
+      "withheld": "Nicht angeboten: Ollie nutzt höchstens 120 verbundene Tools gleichzeitig. Schalten Sie andere aus, um es anzubieten."
     },
     "category": {
       "all": "Alle",

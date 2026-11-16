@@ -53,7 +53,7 @@
     "title": "Approuver cette modification ?",
     "approve": "Approuver",
     "deny": "Refuser",
-    "external": "Envoie au client",
+    "external": "Sort de l’espace de travail",
     "system": "S’exécute dans {{system}}",
     "more": "et {{count}} de plus",
     "expires": "En attente de votre décision",
