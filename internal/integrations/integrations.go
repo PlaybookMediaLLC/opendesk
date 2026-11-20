@@ -112,7 +112,25 @@ type StoredTool struct {
 	// ReadOnly is the server's own readOnlyHint; whether Ollie runs the tool without
 	// approval is row.readOnly, which also honours the admin's ask_tools.
 	ReadOnly bool `json:"read_only"`
+	// DestructiveHint and OpenWorldHint are the server's own annotations, nil when it
+	// sent none (the MCP defaults are true for both).
+	DestructiveHint *bool `json:"destructive_hint,omitempty"`
+	OpenWorldHint   *bool `json:"open_world_hint,omitempty"`
 }
+
+// Destructive reports a write its server does not mark as harmless: destructiveHint is
+// true or absent (the MCP default). A read-only tool is never destructive.
+func (t StoredTool) Destructive() bool {
+	return !t.ReadOnly && (t.DestructiveHint == nil || *t.DestructiveHint)
+}
+
+// OpenWorld reports a tool that may reach systems or people outside the workspace:
+// openWorldHint is true or absent (the MCP default).
+func (t StoredTool) OpenWorld() bool { return t.OpenWorldHint == nil || *t.OpenWorldHint }
+
+// mayAutoRun says whether a write may ever run without the user's approval: its server
+// marks it neither destructive nor open-world. Every other write asks, whatever auto_tools says.
+func (t StoredTool) mayAutoRun() bool { return !t.ReadOnly && !t.Destructive() && !t.OpenWorld() }
 
 type row struct {
 	ID             uuid.UUID
@@ -158,10 +176,11 @@ func (x *row) readOnly(t StoredTool) bool {
 }
 
 // autoRun says whether a write runs without the user's approval: an admin listed it in
-// auto_tools, and it is a write that is not also set to ask first (ask_tools wins).
-// A read-only tool needs no approval anyway, so it is never counted as auto-run.
+// auto_tools, it is a write that is not also set to ask first (ask_tools wins), and its
+// server marks it neither destructive nor open-world (mayAutoRun). A read-only tool needs
+// no approval anyway, so it is never counted as auto-run.
 func (x *row) autoRun(t StoredTool) bool {
-	return !x.readOnly(t) && slices.Contains(x.AutoTools, t.Name) && !slices.Contains(x.AskTools, t.Name)
+	return !x.readOnly(t) && t.mayAutoRun() && slices.Contains(x.AutoTools, t.Name) && !slices.Contains(x.AskTools, t.Name)
 }
 
 // knownTools keeps the names in list that are tools of the connection, once each.
@@ -384,8 +403,12 @@ func storedTools(in []RemoteTool) []StoredTool {
 		if json.Unmarshal(schema, &probe) != nil || probe == nil {
 			schema = json.RawMessage(`{"type":"object"}`)
 		}
-		out = append(out, StoredTool{Name: name, Title: clip(title, 120), Description: clip(t.Description, 1024),
-			InputSchema: schema, ReadOnly: t.Annotations != nil && t.Annotations.ReadOnlyHint != nil && *t.Annotations.ReadOnlyHint})
+		st := StoredTool{Name: name, Title: clip(title, 120), Description: clip(t.Description, 1024), InputSchema: schema}
+		if a := t.Annotations; a != nil {
+			st.ReadOnly = a.ReadOnlyHint != nil && *a.ReadOnlyHint
+			st.DestructiveHint, st.OpenWorldHint = a.DestructiveHint, a.OpenWorldHint
+		}
+		out = append(out, st)
 	}
 	return out
 }
@@ -406,10 +429,15 @@ type Tool struct {
 	// ReadOnly: the tool runs without approval (its server marks it read-only and no
 	// admin asked for approval first).
 	ReadOnly bool
-	// AutoRun: a write an admin lets run without the user's approval (auto_tools, and
-	// not on ask_tools). Call checks it again when the call runs.
+	// AutoRun: a write an admin lets run without the user's approval (auto_tools, not on
+	// ask_tools, and marked neither destructive nor open-world by its server). Call checks
+	// it again when the call runs.
 	AutoRun bool
-	Hosts   []string
+	// OpenWorld: the server does not mark the tool as staying in a closed system
+	// (openWorldHint true or absent), so a call may reach people or systems outside the
+	// workspace.
+	OpenWorld bool
+	Hosts     []string
 }
 
 // CallMode is why a call may run: as a read, approved by the user, or as an auto-run write.
@@ -434,13 +462,18 @@ func (s *Service) Tools(ctx context.Context, wid uuid.UUID) ([]Tool, error) {
 		return nil, err
 	}
 	var out []Tool
+	withheld := 0
 	for _, x := range rows {
 		if !x.Enabled || x.Status != "connected" {
 			continue
 		}
 		prov, _ := provider(x.Provider)
 		for _, t := range x.Tools {
-			if slices.Contains(x.DisabledTools, t.Name) || len(out) >= maxOffered {
+			if slices.Contains(x.DisabledTools, t.Name) {
+				continue
+			}
+			if len(out) >= maxOffered {
+				withheld++
 				continue
 			}
 			var schema map[string]any
@@ -458,8 +491,13 @@ func (s *Service) Tools(ctx context.Context, wid uuid.UUID) ([]Tool, error) {
 			}
 			out = append(out, Tool{Name: toolName(x.Slug, t.Name), Remote: t.Name, IntegrationID: x.ID, Integration: x.Name,
 				Provider: x.Provider, Title: firstNonEmpty(t.Title, humanize(t.Name)),
-				Description: clip("["+x.Name+"] "+desc, 1100), Schema: schema, ReadOnly: x.readOnly(t), AutoRun: x.autoRun(t), Hosts: prov.Hosts})
+				Description: clip("["+x.Name+"] "+desc, 1100), Schema: schema, ReadOnly: x.readOnly(t), AutoRun: x.autoRun(t),
+				OpenWorld: t.OpenWorld(), Hosts: prov.Hosts})
 		}
+	}
+	if withheld > 0 {
+		// Settings marks these tools withheld (ToolInfo.Withheld); the log counts them.
+		s.d.Log.Warn("connected tools past the offered limit", "workspace_id", wid, "withheld", withheld)
 	}
 	return out, nil
 }
@@ -468,6 +506,13 @@ func (s *Service) Tools(ctx context.Context, wid uuid.UUID) ([]Tool, error) {
 // CallAuto) runs only while the workspace has the tool that way now: a tool an admin set
 // to ask first never runs as a read, and one taken off auto_tools never runs on its own.
 func (s *Service) Call(ctx context.Context, wid, integrationID uuid.UUID, remote string, args json.RawMessage, mode CallMode) (*CallResult, error) {
+	return s.CallKeyed(ctx, wid, integrationID, remote, args, mode, "")
+}
+
+// CallKeyed is Call with an idempotency key, sent in _meta with every attempt of the call
+// (contracts/integrations.md). A retry after the server asked for a new session or new
+// credentials carries the same key.
+func (s *Service) CallKeyed(ctx context.Context, wid, integrationID uuid.UUID, remote string, args json.RawMessage, mode CallMode, key string) (*CallResult, error) {
 	x, err := loadRow(ctx, s.d.DB.Pool, wid, integrationID)
 	if err != nil {
 		if db.IsNotFound(err) {
@@ -490,7 +535,7 @@ func (s *Service) Call(ctx context.Context, wid, integrationID uuid.UUID, remote
 		ctx, cancel := context.WithTimeout(ctx, 55*time.Second)
 		defer cancel()
 		var err error
-		res, err = sess.CallTool(ctx, remote, args)
+		res, err = sess.CallToolKeyed(ctx, remote, args, key)
 		return err
 	})
 	return res, err

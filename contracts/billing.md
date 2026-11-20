@@ -112,8 +112,10 @@ charge (USD) = provider cost in USD × AI_USAGE_MARKUP, rounded up to $0.000001
 
 ### Starting a call
 
-`Reserve` refuses a call (`402 ai_balance_empty`, the model is not called) when the remaining
-balance is below the call's **estimate**:
+`Hold` refuses a call (`402 ai_balance_empty`, the model is not called) when the remaining
+balance, less what calls in progress hold (`ai_balance_holds`), is below the call's **estimate**;
+otherwise it holds the estimate until the call is charged (`Spend` with `Usage.Hold`) or released, or for
+10 minutes at most. `Reserve` makes the same check without holding, before a run starts:
 
 ```
 estimate = (prompt tokens × input price + min(max output tokens, 4,000) × output price) × markup
@@ -172,9 +174,11 @@ provider cost is internal and never returned by the API.
 Go API (`internal/plan`, `d.Plan`):
 - `d.Plan.Entitlements(ctx, q, wid)`, `d.Plan.CheckMailbox`, `d.Plan.CheckMember` (return
   `*plan.LimitError` → `httpx.Wrap` → `402 plan_limit`).
-- `d.Plan.Reserve(ctx, q, wid, estimate)` before a model call (`plan.ErrNoBalance` → `402 ai_balance_empty`),
-  then `d.Plan.Spend(ctx, pool, wid, plan.Usage{..., CostUSD})` after it succeeds. Failed calls cost nothing.
-  A call on the workspace's own key skips `Reserve` and spends with `plan.Usage{..., OwnKey: true}`:
+- `d.Plan.Hold(ctx, pool, wid, estimate)` before a model call (`plan.ErrNoBalance` → `402 ai_balance_empty`),
+  then `d.Plan.Spend(ctx, pool, wid, plan.Usage{..., CostUSD, Hold})` once the model answered (whatever the
+  feature makes of the answer), or `d.Plan.Release` when it failed before producing anything; a stream that
+  stopped after delivering output is charged for what it delivered. `d.Plan.Reserve` checks without holding.
+  A call on the workspace's own key skips both and spends with `plan.Usage{..., OwnKey: true}`:
   recorded (`source = "own_key"`), $0, balance untouched. Features go through `internal/ai`, which
   computes the estimate and decides this per workspace (`ai.Service.Reserve` for callers outside it,
   such as the assistant, estimates a typical call of the feature on the workspace's model).

@@ -60,9 +60,11 @@ type PlaygroundMessage struct {
 
 // PlaygroundAction is a tool call the playground did not run.
 type PlaygroundAction struct {
-	Tool    string `json:"tool"`
-	Title   string `json:"title"`
-	Summary string `json:"summary"`
+	Tool    string                 `json:"tool"`
+	Title   string                 `json:"title"`
+	Summary string                 `json:"summary"`
+	Fields  []domain.AIActionField `json:"fields"`
+	Omitted int                    `json:"omitted,omitempty"`
 }
 
 // PlaygroundOutput is the playground's done event (and the JSON response).
@@ -224,7 +226,9 @@ func (s *Service) Playground(ctx context.Context, p *auth.Principal, in Playgrou
 	body, cited := finishReply(res.Text, res.Passages)
 	out := &PlaygroundOutput{TextHTML: body, Sources: toSources(cited), Handoff: res.Handoff, Procedures: procedureRefs(res.Procedures), USD: res.USD.USD()}
 	if a := res.Action; a != nil {
-		out.Action = &PlaygroundAction{Tool: a.Tool.displayName(), Title: firstNonEmpty(a.Tool.Title, a.Tool.displayName()), Summary: a.Summary}
+		fields, omitted := actionFields(a.Tool.Schema, a.Args)
+		out.Action = &PlaygroundAction{Tool: a.Tool.displayName(), Title: firstNonEmpty(a.Tool.Title, a.Tool.displayName()), Summary: a.Summary,
+			Fields: fields, Omitted: omitted}
 	}
 	return out, nil
 }
@@ -271,8 +275,11 @@ func (s *Service) agentTrial(ctx context.Context, wid uuid.UUID, msgs []Playgrou
 	}
 	ai := agentInput{wid: wid, feature: "playground", set: set, bot: bot, company: company,
 		thread: block("ticket_thread", nil, strings.TrimSpace(thread.String())), query: agentQuery(texts, burst), playground: true}
+	// A made-up conversation: its tool calls are marked as tests and never carry a verified
+	// identity to a company's server; Verified only decides which tools are offered.
+	ai.visitor = AgentVisitor{Test: true}
 	if v != nil {
-		ai.visitor = AgentVisitor{Verified: v.Verified, Name: clip(strings.TrimSpace(v.Name), 100)}
+		ai.visitor.Verified, ai.visitor.Name = v.Verified, clip(strings.TrimSpace(v.Name), 100)
 		if v.Verified {
 			ai.visitor.UserID, ai.visitor.Email = clip(strings.TrimSpace(v.UserID), 200), clip(strings.TrimSpace(v.Email), 254)
 		}

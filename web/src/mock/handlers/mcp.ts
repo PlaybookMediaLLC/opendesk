@@ -19,7 +19,7 @@ const CONNECT_ERROR = "Couldn't connect to the server. Check the URL and try aga
 
 // ─── Tool catalogues ───────────────────────────────────────────────────────
 
-type ToolDef = Omit<McpTool, "enabled" | "policy" | "verified_only"> & Partial<Pick<McpTool, "enabled" | "policy" | "verified_only">>;
+type ToolDef = Omit<McpTool, "enabled" | "policy" | "verified_only" | "usable"> & Partial<Pick<McpTool, "enabled" | "policy" | "verified_only">>;
 
 const obj = (properties: Record<string, unknown>, required: string[] = []) => ({ type: "object", properties, required, additionalProperties: false });
 
@@ -136,8 +136,10 @@ function withSettings(defs: ToolDef[], previous: McpTool[]): McpTool[] {
     return {
       ...d,
       enabled: old?.enabled ?? d.enabled ?? d.read_only,
-      policy: old?.policy ?? d.policy ?? (d.read_only ? "auto" : "confirm"),
-      verified_only: old?.verified_only ?? d.verified_only ?? false,
+      // A write always asks the visitor and starts offered to verified visitors only (contracts/agent.md).
+      policy: d.read_only ? (old?.policy ?? d.policy ?? "auto") : "confirm",
+      verified_only: old?.verified_only ?? d.verified_only ?? !d.read_only,
+      usable: true,
     };
   });
 }
@@ -433,6 +435,7 @@ export function registerMcp() {
         }
         if ("policy" in p) {
           if (p.policy !== "auto" && p.policy !== "confirm") throw invalid("policy must be auto or confirm");
+          if (p.policy === "auto" && !t.read_only) throw new HttpError(422, "confirm_required", "A tool that is not read-only always waits for the visitor's confirmation.");
           t.policy = p.policy;
         }
         if ("verified_only" in p) {
@@ -494,6 +497,9 @@ export function registerMcp() {
     const tool = s.tools.find((t) => t.name === ctx.params.name);
     if (!tool) throw notFound("Tool");
     if (s.status !== "connected") throw new HttpError(409, "conflict", "Connect this server before testing its tools");
+    // A tool that needs confirmation runs in a test only when the admin confirms it.
+    if ((!tool.read_only || tool.policy === "confirm") && ctx.body.confirm !== true)
+      throw new HttpError(409, "confirm_required", "This tool needs confirmation. Send confirm: true to run it once.");
     const args = isRecord(ctx.body.arguments) ? ctx.body.arguments : {};
     const started = Date.now();
     await new Promise((r) => setTimeout(r, 250 + Math.random() * 450));

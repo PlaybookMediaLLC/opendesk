@@ -483,6 +483,9 @@ func registerRoutes(r *Registry, api huma.API, router chi.Router) {
 						if *tp.Policy != PolicyAuto && *tp.Policy != PolicyConfirm {
 							return httpx.Validation("Policy is auto or confirm.")
 						}
+						if *tp.Policy == PolicyAuto && !t.ReadOnly {
+							return httpx.E(422, "confirm_required", "A tool that is not read-only always waits for the visitor's confirmation.")
+						}
 						st.Policy = *tp.Policy
 					}
 					if tp.VerifiedOnly != nil {
@@ -643,12 +646,15 @@ func registerRoutes(r *Registry, api huma.API, router chi.Router) {
 		})
 
 	huma.Register(api, huma.Operation{OperationID: "test-mcp-tool", Method: http.MethodPost, Path: "/v1/ai/mcp-servers/{id}/tools/{name}/test",
-		Summary: "Test an MCP tool", Description: "Runs the tool once with the given arguments, whatever its policy.", Tags: tags},
+		Summary: "Test an MCP tool", Description: "Runs the tool once with the given arguments, as a test call: `_meta` carries " +
+			"`\"opendesk/test\": true` and never a verified visitor. A tool that needs confirmation (not read-only, or policy `confirm`) " +
+			"runs only for a person who sends `confirm: true`.", Tags: tags},
 		func(ctx context.Context, in *struct {
 			ID   string `path:"id"`
 			Name string `path:"name" maxLength:"128"`
 			Body struct {
 				Arguments map[string]any `json:"arguments"`
+				Confirm   bool           `json:"confirm,omitempty" doc:"Run a tool that needs confirmation (it is not read-only, or its policy is confirm)"`
 				Visitor   *struct {
 					Name     string `json:"name,omitempty" maxLength:"100"`
 					Email    string `json:"email,omitempty" maxLength:"254"`
@@ -682,12 +688,24 @@ func registerRoutes(r *Registry, api huma.API, router chi.Router) {
 			if err != nil {
 				return nil, wrapNotFound(err)
 			}
-			if _, ok := s.tool(in.Name); !ok {
+			t, ok := s.tool(in.Name)
+			if !ok {
 				return nil, httpx.NotFound("Tool")
 			}
-			var v Visitor
+			// The tool's policy holds for a test too: one that needs confirmation runs only
+			// when a person confirms it here.
+			if st := s.setting(t); st.Policy == PolicyConfirm || !t.ReadOnly {
+				if p.Kind != auth.KindUser {
+					return nil, httpx.E(403, "forbidden", "Testing a tool that needs confirmation needs a person.")
+				}
+				if !in.Body.Confirm {
+					return nil, httpx.E(409, "confirm_required", "This tool needs confirmation. Send confirm: true to run it once.")
+				}
+			}
+			// A test call: marked as one, and never a verified identity, whatever the body says.
+			v := Visitor{Test: true}
 			if vi := in.Body.Visitor; vi != nil {
-				v = Visitor{Verified: vi.Verified, UserID: vi.UserID, Email: vi.Email, Name: displayname.Clean(vi.Name, displayname.Person)}
+				v.Name = displayname.Clean(vi.Name, displayname.Person)
 			}
 			args, _ := json.Marshal(in.Body.Arguments)
 			start := time.Now()

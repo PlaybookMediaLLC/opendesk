@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -106,7 +107,7 @@ func TestVerifyAndParseCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := []byte(`{"id":"I1","guild_id":"G1","channel_id":"TH1","type":2,"member":{"user":{"id":"U1"}},"data":{"name":"reply","options":[{"name":"text","value":"Hello"}]}}`)
-	ts := "123"
+	ts := strconv.FormatInt(time.Now().Unix(), 10)
 	sig := ed25519.Sign(priv, append([]byte(ts), body...))
 	h := http.Header{"X-Signature-Timestamp": []string{ts}, "X-Signature-Ed25519": []string{hex.EncodeToString(sig)}}
 	if err = (Adapter{}).Verify(h, body, map[string]string{"public_key": hex.EncodeToString(pub)}); err != nil {
@@ -119,6 +120,12 @@ func TestVerifyAndParseCommand(t *testing.T) {
 	events := result.Events
 	if len(events) != 1 || events[0].AccountID != "G1" || events[0].ExternalUserID != "U1" || events[0].Command != "reply" || events[0].Text != "Hello" || result.Status != http.StatusOK {
 		t.Fatalf("event: %+v", events)
+	}
+	// A correctly signed request from long ago is refused.
+	old := "123"
+	oldH := http.Header{"X-Signature-Timestamp": []string{old}, "X-Signature-Ed25519": []string{hex.EncodeToString(ed25519.Sign(priv, append([]byte(old), body...)))}}
+	if err = (Adapter{}).Verify(oldH, body, map[string]string{"public_key": hex.EncodeToString(pub)}); err == nil {
+		t.Fatal("accepted a stale timestamp")
 	}
 	body[0] ^= 1
 	if err = (Adapter{}).Verify(h, body, map[string]string{"public_key": hex.EncodeToString(pub)}); err == nil {

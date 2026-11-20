@@ -53,7 +53,7 @@
     "title": "Approve this change?",
     "approve": "Approve",
     "deny": "Deny",
-    "external": "Sends to the customer",
+    "external": "Leaves the workspace",
     "system": "Runs in {{system}}",
     "more": "and {{count}} more",
     "expires": "Waiting for you",

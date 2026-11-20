@@ -78,6 +78,12 @@ type runCtx struct {
 	auto []string
 	// noSeverity: the workspace does not use severity, so changes leave it alone.
 	noSeverity bool
+	// outside: the conversation holds text written outside the workspace (taint.go), so
+	// every change and every connected tool call waits for the user's approval.
+	outside bool
+	// sid and lease are the conversation and the run's claim on it (register.go begin).
+	sid   uuid.UUID
+	lease uuid.UUID
 }
 
 type tool struct {

@@ -934,7 +934,7 @@ export const api = {
       sync: (id: string) => http.post<T.McpServer>(`/v1/ai/mcp-servers/${id}/sync`),
       /** The authorization URL to send the browser to. */
       oauthStart: (id: string) => http.post<{ url: string }>(`/v1/ai/mcp-servers/${id}/oauth/start`),
-      testTool: (id: string, tool: string, b: { arguments: Record<string, unknown>; visitor?: T.PlaygroundVisitor }) =>
+      testTool: (id: string, tool: string, b: { arguments: Record<string, unknown>; confirm?: boolean; visitor?: Pick<T.PlaygroundVisitor, "name"> }) =>
         http.post<T.McpToolResult>(`/v1/ai/mcp-servers/${id}/tools/${encodeURIComponent(tool)}/test`, b),
     },
     knowledge: {

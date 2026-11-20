@@ -84,6 +84,9 @@ type McpTool struct {
 	Enabled      bool           `json:"enabled"`
 	Policy       string         `json:"policy" enum:"auto,confirm"`
 	VerifiedOnly bool           `json:"verified_only"`
+	// Usable is false for a tool the agent cannot be offered: its name is not
+	// [a-zA-Z0-9_-], or <server_slug>__<tool> is longer than 64 characters.
+	Usable bool `json:"usable" doc:"The agent can be offered the tool: its name is letters, digits, _ and -, and <server_slug>__<tool> is at most 64 characters"`
 }
 
 // cachedTool is a tool as the server last listed it.
@@ -103,12 +106,13 @@ type toolSetting struct {
 	VerifiedOnly bool   `json:"verified_only"`
 }
 
-// defaultSetting: read-only tools run on their own, others are off and need confirmation.
+// defaultSetting: read-only tools run on their own; others are off, need confirmation and
+// are offered only in verified sessions.
 func defaultSetting(t cachedTool) toolSetting {
 	if t.ReadOnly {
 		return toolSetting{Enabled: true, Policy: PolicyAuto}
 	}
-	return toolSetting{Enabled: false, Policy: PolicyConfirm}
+	return toolSetting{Enabled: false, Policy: PolicyConfirm, VerifiedOnly: true}
 }
 
 // oauthMeta is the OAuth state without secrets.
@@ -207,9 +211,11 @@ func (s *server) tool(name string) (cachedTool, bool) {
 	return cachedTool{}, false
 }
 
+// setting is the admin's choice for a tool, or its default. A tool that is not read-only
+// always needs confirmation, whatever was stored.
 func (s *server) setting(t cachedTool) toolSetting {
 	if st, ok := s.Settings[t.Name]; ok {
-		if st.Policy != PolicyAuto && st.Policy != PolicyConfirm {
+		if st.Policy != PolicyAuto && st.Policy != PolicyConfirm || !t.ReadOnly {
 			st.Policy = PolicyConfirm
 		}
 		return st
@@ -261,8 +267,9 @@ func (s *server) view(box *crypto.Box) McpServer {
 	}
 	for _, t := range s.Tools {
 		st := s.setting(t)
+		_, usable := ToolName(s.Slug, t.Name)
 		mt := McpTool{Name: t.Name, Description: t.Description, InputSchema: t.InputSchema, ReadOnly: t.ReadOnly,
-			Destructive: t.Destructive, Enabled: st.Enabled, Policy: st.Policy, VerifiedOnly: st.VerifiedOnly}
+			Destructive: t.Destructive, Enabled: st.Enabled, Policy: st.Policy, VerifiedOnly: st.VerifiedOnly, Usable: usable}
 		if t.Title != "" {
 			title := t.Title
 			mt.Title = &title

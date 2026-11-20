@@ -114,6 +114,9 @@ func TestVerifyAndParseCommand(t *testing.T) {
 	if err := (Adapter{}).Verify(h, body, map[string]string{"webhook_secret": "secret"}); err == nil {
 		t.Fatal("accepted invalid secret")
 	}
+	if err := (Adapter{}).Verify(http.Header{}, body, map[string]string{"webhook_secret": ""}); err == nil {
+		t.Fatal("accepted an empty secret")
+	}
 }
 
 func TestParseDocumentAndEditedNote(t *testing.T) {

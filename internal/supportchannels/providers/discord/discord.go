@@ -11,7 +11,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/useopendesk/opendesk/internal/supportchannels/channel"
 )
@@ -230,9 +232,15 @@ func (Adapter) Verify(h http.Header, body []byte, cr map[string]string) error {
 	if err != nil || len(sig) != ed25519.SignatureSize {
 		return errors.New("invalid discord signature")
 	}
-	msg := append([]byte(h.Get("X-Signature-Timestamp")), body...)
+	ts := h.Get("X-Signature-Timestamp")
+	msg := append([]byte(ts), body...)
 	if !ed25519.Verify(pk, msg, sig) {
 		return errors.New("invalid discord signature")
+	}
+	// A signed request is fresh: its timestamp within five minutes of now.
+	at, err := strconv.ParseInt(ts, 10, 64)
+	if err != nil || time.Since(time.Unix(at, 0)).Abs() > 5*time.Minute {
+		return errors.New("invalid discord timestamp")
 	}
 	return nil
 }

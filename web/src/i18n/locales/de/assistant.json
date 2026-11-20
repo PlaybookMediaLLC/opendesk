@@ -53,7 +53,7 @@
     "title": "Diese Änderung genehmigen?",
     "approve": "Genehmigen",
     "deny": "Ablehnen",
-    "external": "Geht an den Kunden",
+    "external": "Verlässt den Workspace",
     "system": "Läuft in {{system}}",
     "more": "und {{count}} weitere",
     "expires": "Wartet auf dich",

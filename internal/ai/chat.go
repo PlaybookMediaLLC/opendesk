@@ -139,12 +139,13 @@ func (s *Service) AssistantTurn(ctx context.Context, wid uuid.UUID, userID *uuid
 }
 
 // Reserve checks before a run that the workspace can pay for a typical call of a
-// feature on its model: its AI balance, or nothing when it uses its own key.
+// feature on its model: its AI balance less what calls in progress hold, or nothing when
+// it uses its own key. It holds nothing; each call of the run holds its own estimate.
 func (s *Service) Reserve(ctx context.Context, wid uuid.UUID, feature string) error {
 	c := s.newCall(wid, nil, nil, feature)
 	model := c.resolveModel(ctx, "")
 	t := typicalTokens[feature]
-	return c.reserve(ctx, model, t.in, t.out)
+	return c.check(ctx, model, t.in, t.out)
 }
 
 // toolsFor reports whether the workspace's provider can call tools (ErrNoTools if not).
@@ -171,7 +172,12 @@ func (c *call) chat(ctx context.Context, req ChatRequest, onDelta func(string)) 
 		return ChatResponse{}, ErrNoTools
 	}
 	start := time.Now()
-	resp, err := tp.Chat(ctx, req, onDelta)
+	sd := &streamed{fn: onDelta}
+	delta := onDelta
+	if onDelta != nil {
+		delta = sd.delta
+	}
+	resp, err := tp.Chat(ctx, req, delta)
 	c.onKey = rt.own
 	err = c.s.keyResult(ctx, c.wid, rt, err)
 	if resp.Model == "" {
@@ -180,9 +186,13 @@ func (c *call) chat(ctx context.Context, req ChatRequest, onDelta func(string)) 
 	c.s.d.Log.Debug("ai call", "feature", c.feature, "model", resp.Model, "input_tokens", resp.InputTokens,
 		"output_tokens", resp.OutputTokens, "tool_calls", len(resp.Calls), "ms", time.Since(start).Milliseconds(), "ok", err == nil)
 	if err != nil {
+		// A turn that streamed text before it stopped is charged for that text.
+		c.chargePartial(ctx, req.Model, chatTokens(req), sd.n)
 		return ChatResponse{}, err
 	}
+	// Charged once the model answered, whatever the caller then makes of the answer.
 	c.resp = Response{Model: resp.Model, InputTokens: resp.InputTokens, OutputTokens: resp.OutputTokens, CostUSD: resp.CostUSD}
+	c.charge(ctx)
 	return resp, nil
 }
 

@@ -209,6 +209,10 @@ type call struct {
 	// calibrated marks a decision answered by a calibrated engine (Jev): its
 	// probabilities can be gated on.
 	calibrated bool
+	// hold is the call's hold on the AI balance (reserve), ended by charge or release.
+	hold uuid.UUID
+	// done marks a call already charged, so a second charge does nothing.
+	done bool
 }
 
 func (s *Service) newCall(wid uuid.UUID, userID, ticketID *uuid.UUID, feature string) *call {
@@ -234,8 +238,9 @@ func (c *call) route(ctx context.Context) (*route, error) {
 	return rt, nil
 }
 
-// reserve checks the AI balance before an LLM call on model with about in prompt tokens
-// and up to maxOut output tokens. A workspace on its own key needs none.
+// reserve holds the AI balance before an LLM call on model with about in prompt tokens
+// and up to maxOut output tokens (plan.Hold): concurrent calls cannot spend the same
+// balance. A workspace on its own key needs none.
 func (c *call) reserve(ctx context.Context, model string, in, maxOut int) error {
 	rt, err := c.route(ctx)
 	if err != nil {
@@ -247,12 +252,69 @@ func (c *call) reserve(ctx context.Context, model string, in, maxOut int) error 
 	return c.reserveBalance(ctx, c.s.estimate(ctx, c.feature, model, in, maxOut))
 }
 
-// reserveBalance checks the balance covers an estimate (instance calls, Jev decisions).
+// reserveBalance holds an estimate of the balance (instance calls, Jev decisions); the
+// hold ends when the call is charged or released.
 func (c *call) reserveBalance(ctx context.Context, estimate plan.Micro) error {
 	if c.s.d.Plan == nil {
 		return nil // no plan service: unlimited
 	}
-	return c.s.d.Plan.Reserve(ctx, c.s.d.DB.Pool, c.wid, estimate)
+	c.release(ctx) // a call that reserves again (a new turn) gives back what it held
+	id, err := c.s.d.Plan.Hold(ctx, c.s.d.DB.Pool, c.wid, estimate)
+	if err != nil {
+		return err
+	}
+	c.hold, c.done = id, false
+	return nil
+}
+
+// check reports whether the balance, less what calls in progress hold, covers an
+// estimate, without holding anything (a check before a run starts).
+func (c *call) check(ctx context.Context, model string, in, maxOut int) error {
+	rt, err := c.route(ctx)
+	if err != nil {
+		return err
+	}
+	if rt.own || c.s.d.Plan == nil {
+		return nil
+	}
+	return c.s.d.Plan.Reserve(ctx, c.s.d.DB.Pool, c.wid, c.s.estimate(ctx, c.feature, model, in, maxOut))
+}
+
+// release ends the call's hold without charging (the model was not reached).
+func (c *call) release(ctx context.Context) {
+	if c.hold == uuid.Nil || c.s.d.Plan == nil {
+		return
+	}
+	if err := c.s.d.Plan.Release(context.WithoutCancel(ctx), c.s.d.DB.Pool, c.hold); err != nil {
+		c.s.d.Log.Warn("ai hold release failed", "feature", c.feature, "err", err)
+	}
+	c.hold = uuid.Nil
+}
+
+// streamed counts the characters a streaming call delivered, for charging a stream that
+// stops before it ends.
+type streamed struct {
+	n  int
+	fn func(string)
+}
+
+func (s *streamed) delta(d string) {
+	s.n += len(d)
+	if s.fn != nil {
+		s.fn(d)
+	}
+}
+
+// chargePartial charges a call that failed after the model produced output (a stream
+// stopped by the client or the provider): the prompt as estimated and the output as
+// delivered. A call that produced nothing gives its hold back.
+func (c *call) chargePartial(ctx context.Context, model string, in, outChars int) {
+	if outChars == 0 {
+		c.release(ctx)
+		return
+	}
+	c.resp = Response{Model: model, InputTokens: in, OutputTokens: (outChars + 3) / 4}
+	c.charge(ctx)
 }
 
 // resolveModel picks the model of a call: an explicit override, else the workspace's
@@ -282,17 +344,21 @@ func (c *call) resolveModel(ctx context.Context, requested string) string {
 	return c.s.tierModelOn(ctx, rt, st.AI(), featureTier(c.feature))
 }
 
-// run reserves and calls the model; onDelta non-nil streams.
+// run reserves and calls the model; onDelta non-nil streams. A call the model answered is
+// charged here, whatever the caller then makes of the answer; a stream that stops early is
+// charged for what it delivered.
 func (c *call) run(ctx context.Context, req Request, onDelta func(string)) (Response, error) {
 	req.Model = c.resolveModel(ctx, req.Model)
-	if err := c.reserve(ctx, req.Model, requestTokens(req), req.MaxTokens); err != nil {
+	in := requestTokens(req)
+	if err := c.reserve(ctx, req.Model, in, req.MaxTokens); err != nil {
 		return Response{}, err
 	}
 	rt := c.rt
 	var err error
 	start := time.Now()
+	sd := &streamed{fn: onDelta}
 	if onDelta != nil {
-		c.resp, err = rt.p.Stream(ctx, req, onDelta)
+		c.resp, err = rt.p.Stream(ctx, req, sd.delta)
 	} else {
 		c.resp, err = rt.p.Complete(ctx, req)
 	}
@@ -304,7 +370,12 @@ func (c *call) run(ctx context.Context, req Request, onDelta func(string)) (Resp
 	// Counts and timings only: prompts and completions are never logged.
 	c.s.d.Log.Debug("ai call", "feature", c.feature, "model", c.resp.Model, "input_tokens", c.resp.InputTokens,
 		"output_tokens", c.resp.OutputTokens, "ms", time.Since(start).Milliseconds(), "ok", err == nil)
-	return c.resp, err
+	if err != nil {
+		c.chargePartial(ctx, req.Model, in, sd.n)
+		return c.resp, err
+	}
+	c.charge(ctx)
+	return c.resp, nil
 }
 
 // decide asks the workspace's decision engine (decisionsFor). Usage is recorded by charge
@@ -334,6 +405,9 @@ func (c *call) decide(ctx context.Context, req decide.Request) (decide.Result, e
 	start := time.Now()
 	res, err := dc.Decide(ctx, req)
 	err = c.s.decisionKeyResult(ctx, c.wid, dr, err)
+	if err != nil {
+		c.release(ctx)
+	}
 	c.resp = Response{Model: dc.Name(), InputTokens: res.InputTokens, OutputTokens: res.OutputTokens, CostUSD: res.CostUSD}
 	if dc.Name() != "jev" {
 		c.resp.Model = res.Model
@@ -362,13 +436,20 @@ func decisionErr(err error) error {
 	return ErrUnavailable
 }
 
-// charge records usage and charges the call's cost after it succeeded.
+// charge records usage and charges the call's cost once the model answered, ending its
+// hold. A call is charged once: a second charge does nothing until the call reserves again.
 func (c *call) charge(ctx context.Context) {
+	if c.done {
+		return
+	}
+	c.done = true
 	ctx = context.WithoutCancel(ctx)
 	var err error
 	if c.s.d.Plan != nil {
 		c.charged, err = c.s.d.Plan.Spend(ctx, c.s.d.DB.Pool, c.wid, plan.Usage{UserID: c.userID, TicketID: c.ticketID, Feature: c.feature,
-			Model: c.resp.Model, InputTokens: c.resp.InputTokens, OutputTokens: c.resp.OutputTokens, CostUSD: c.s.costOf(ctx, c.resp), OwnKey: c.onKey})
+			Model: c.resp.Model, InputTokens: c.resp.InputTokens, OutputTokens: c.resp.OutputTokens, CostUSD: c.s.costOf(ctx, c.resp), OwnKey: c.onKey,
+			Hold: c.hold})
+		c.hold = uuid.Nil
 	}
 	if err != nil {
 		c.s.d.Log.Warn("ai spend failed", "feature", c.feature, "err", err)

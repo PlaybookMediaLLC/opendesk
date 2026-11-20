@@ -160,7 +160,8 @@ func (a Adapter) Health(ctx context.Context, c *http.Client, cr map[string]strin
 }
 func (Adapter) Verify(h http.Header, _ []byte, cr map[string]string) error {
 	a, b := []byte(h.Get("X-Telegram-Bot-Api-Secret-Token")), []byte(cr["webhook_secret"])
-	if len(a) != len(b) || subtle.ConstantTimeCompare(a, b) != 1 {
+	// A connection without a secret verifies nothing.
+	if len(b) == 0 || len(a) != len(b) || subtle.ConstantTimeCompare(a, b) != 1 {
 		return errors.New("invalid telegram secret")
 	}
 	return nil

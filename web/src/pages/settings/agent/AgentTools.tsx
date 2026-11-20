@@ -527,15 +527,22 @@ function ToolCard({ server, tool, onPatch }: { server: McpServer; tool: McpTool;
         <Switch checked={tool.enabled} onCheckedChange={(enabled) => onPatch({ enabled })} aria-label={t("tools.enableTool", { name: tool.title || tool.name })} />
       </div>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-line-soft px-3.5 py-2">
-        <Segmented<"auto" | "confirm">
-          size="xs"
-          value={tool.policy}
-          onChange={(policy) => onPatch({ policy })}
-          options={[
-            { value: "auto", label: t("tools.policy.auto") },
-            { value: "confirm", label: t("tools.policy.confirm") },
-          ]}
-        />
+        {tool.read_only ? (
+          <Segmented<"auto" | "confirm">
+            size="xs"
+            value={tool.policy}
+            onChange={(policy) => onPatch({ policy })}
+            options={[
+              { value: "auto", label: t("tools.policy.auto") },
+              { value: "confirm", label: t("tools.policy.confirm") },
+            ]}
+          />
+        ) : (
+          // A tool that makes changes always waits for the visitor's confirmation (contracts/agent.md).
+          <Tooltip content={t("tools.policy.alwaysConfirm")}>
+            <span className={cn("inline-flex h-6 items-center rounded-md px-2 text-[11.5px] font-medium", tone.amber.chip)}>{t("tools.policy.confirm")}</span>
+          </Tooltip>
+        )}
         <label className="flex items-center gap-2 text-[12px] text-fg-2">
           <Switch checked={tool.verified_only} onCheckedChange={(verified_only) => onPatch({ verified_only })} aria-label={t("tools.verifiedOnly")} />
           <Tooltip content={t("tools.verifiedOnlyHint")}>
@@ -555,9 +562,6 @@ function ToolCard({ server, tool, onPatch }: { server: McpServer; tool: McpTool;
           {t("tools.test.open")}
         </Button>
       </div>
-      {!tool.read_only && tool.policy === "auto" && tool.enabled && (
-        <p className="border-t border-line-soft px-3.5 py-1.5 text-[11.5px] text-tone-amber">{t("tools.autoWarning")}</p>
-      )}
       <AnimatePresence initial={false}>
         {testing && (
           <motion.div

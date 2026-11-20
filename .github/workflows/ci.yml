@@ -184,13 +184,23 @@ jobs:
         run: |
           unformatted=$(git ls-files -z '*.go' | xargs -0 gofmt -l)
           if [ -n "$unformatted" ]; then echo "Run gofmt -w on:"; echo "$unformatted"; exit 1; fi
+      # Compiler, vet and test failures also become annotations on the check run, so
+      # they can be read without the job log (go prints paths without a leading ./,
+      # which setup-go's problem matcher does not match).
       - name: go vet
-        run: go vet ./...
+        run: |
+          set -o pipefail
+          go vet ./... 2>&1 | tee "$RUNNER_TEMP/vet.txt" || {
+            grep -E '\.go:[0-9]+' "$RUNNER_TEMP/vet.txt" | head -200 | awk 'BEGIN { printf "::error title=go vet::" } { gsub(/%/, "%25"); printf "%s%%0A", $0 } END { print "" }'; exit 1; }
       - name: go build
         run: go build ./...
       # The packages share one test database, so they run one at a time.
       - name: go test
-        run: go test -race -p 1 -count=1 ./...
+        run: |
+          set -o pipefail
+          go test -race -p 1 -count=1 ./... 2>&1 | tee "$RUNNER_TEMP/test.txt" || {
+            { grep -E '^(FAIL|panic:)' "$RUNNER_TEMP/test.txt"; grep -E '^\s*--- FAIL|\.go:[0-9]+' "$RUNNER_TEMP/test.txt"; } |
+              head -300 | awk 'BEGIN { printf "::error title=go test::" } { gsub(/%/, "%25"); printf "%s%%0A", $0 } END { print "" }'; exit 1; }
       - name: govulncheck
         uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
         with:

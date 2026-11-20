@@ -35,8 +35,14 @@ func (a *Anthropic) chatParams(req ChatRequest) (anthropic.MessageNewParams, []o
 			}
 			continue
 		}
-		for _, r := range t.Results {
-			blocks = append(blocks, anthropic.NewToolResultBlock(r.CallID, r.Content, r.IsError))
+		for j, r := range t.Results {
+			b := anthropic.NewToolResultBlock(r.CallID, r.Content, r.IsError)
+			// Mid-loop the newest user turn holds only tool results: its last one ends the
+			// cacheable prefix, so the history before it is read from the cache next turn.
+			if i == len(req.Turns)-1 && strings.TrimSpace(t.Text) == "" && j == len(t.Results)-1 && b.OfToolResult != nil {
+				b.OfToolResult.CacheControl = anthropic.NewCacheControlEphemeralParam()
+			}
+			blocks = append(blocks, b)
 		}
 		if strings.TrimSpace(t.Text) != "" {
 			tb := anthropic.TextBlockParam{Text: t.Text}

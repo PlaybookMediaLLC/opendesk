@@ -15,7 +15,8 @@ func TestExternalToolFollowsReadOnly(t *testing.T) {
 	if w := externalTool(integrations.Tool{Name: "linear__search", ReadOnly: false}); !w.Write || w.Read != nil || w.Propose == nil {
 		t.Fatalf("a tool that is not read-only is not a write: %+v", w)
 	}
-	if r := externalTool(integrations.Tool{Name: "linear__search", ReadOnly: true}); r.Write || r.Read == nil {
+	// A read is also proposable, for a conversation that holds outside text.
+	if r := externalTool(integrations.Tool{Name: "linear__search", ReadOnly: true}); r.Write || r.Read == nil || r.Propose == nil || r.Apply == nil {
 		t.Fatalf("a read-only tool is not a read: %+v", r)
 	}
 }

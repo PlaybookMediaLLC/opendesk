@@ -580,7 +580,9 @@
       "autoRunFor": "Let Ollie use {{name}} without asking for approval",
       "more_one": "Show {{count}} more",
       "more_other": "Show {{count}} more",
-      "fewer": "Show fewer"
+      "fewer": "Show fewer",
+      "autoRunBlocked": "Runs without asking only when its server marks it as not destructive and as staying in a closed system.",
+      "withheld": "Not offered: Ollie uses at most 120 connected tools at once. Turn others off to offer it."
     },
     "category": {
       "all": "All",

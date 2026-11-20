@@ -38,9 +38,12 @@ routes send the same request (below) and are the same engine (`jev`). Jev is the
 model, not a persona: everything it decides is shown as Ollie. Without a TypeSafe key every feature
 keeps working on the LLM path; nothing is gated on Jev.
 
-Every call: `d.Plan.Reserve` → model → `d.Plan.Spend` with the call's real cost (see
-`contracts/billing.md`: `Reserve` checks the AI balance covers the call's estimate, priced on the
-chosen model). A workspace on its own provider key skips `Reserve` and is recorded at $0
+Every call: `d.Plan.Hold` → model → `d.Plan.Spend` with the call's real cost (see
+`contracts/billing.md`: `Hold` checks that the AI balance, less what calls in progress hold, covers the
+call's estimate, priced on the chosen model, and holds that estimate until the call is charged or released,
+so concurrent calls cannot spend the same balance; a hold lapses after 10 minutes). `d.Plan.Reserve` is the
+same check without a hold, made before a run (Ollie, a teammate ask). A workspace on its own provider key
+skips both and is recorded at $0
 ("Provider per workspace" below). Prompts carry only the data the feature needs. Customer content is sent to
 the configured provider only; provider responses are not used for training (Anthropic API default;
 on OpenRouter, `data_collection: "deny"`). No prompt or completion
@@ -232,7 +235,7 @@ Errors, all `application/problem+json`:
 | --- | --- | --- |
 | 404 | `ai_disabled` | the instance has no AI provider |
 | 403 | `ai_off` | `settings.ai.enabled` is false |
-| 402 | `ai_balance_empty` | `d.Plan.Reserve` refused: the AI balance does not cover the call's estimate; the model was not called |
+| 402 | `ai_balance_empty` | `d.Plan.Hold` (or `Reserve`) refused: the AI balance, less what calls in progress hold, does not cover the call's estimate; the model was not called |
 | 503 | `ai_busy` | the provider is rate limited or overloaded after retries |
 | 502 | `ai_unavailable` | the provider failed or timed out |
 | 502 | `ai_bad_output` | the model returned output that failed validation |
@@ -240,15 +243,18 @@ Errors, all `application/problem+json`:
 | 502 | `ai_key_rejected` | the workspace's own key was refused by its provider (401, 403) |
 | 502 | `ai_key_no_funds` | the workspace's own provider account is out of funds or quota |
 
-A failed call costs nothing: the AI balance is charged only after the feature succeeded, and a
-usage row (`ai_usage`, counts only) is written with every spend. Without billing (self-host)
+A call is charged once the model answered, whatever the feature then makes of the answer (output that
+fails validation, `ai_bad_output`, is charged too). A call that fails before the model produced anything
+costs nothing and gives its hold back. A stream that stops after output was delivered (the client went
+away, the provider failed) is charged for the prompt as estimated and the output delivered. A usage row
+(`ai_usage`, counts only) is written with every spend. Without billing (self-host)
 usage rows are still written; there is no balance. Each successful call also sends the
 analytics event `ai_feature_used {feature, own_key}`. It records the feature category and
 whether the workspace's own provider key was used; it does not include model names or content.
 
 Streaming: `draft`, `ask`, `rewrite` and wiki writing also accept `Accept: text/event-stream` and stream
 `event: delta` `{text}` chunks, then `event: done` with the full JSON response. The call is
-charged once, at `done`. Delta text is the raw model text (markdown for draft and ask, HTML
+charged once, when the model finished (or stopped, for what it delivered). Delta text is the raw model text (markdown for draft and ask, HTML
 for rewrite) for a live preview only; render and insert the sanitized `done` payload. An
 error before the first event is a normal problem+json response with its status (so `402
 ai_balance_empty` arrives as JSON even on a streaming request); an error after the stream started
@@ -288,6 +294,9 @@ only for what no tool knows or the team has yet to decide.
 - Offered: the connected tools that run without approval as reads (`read_only` in
   `contracts/integrations.md`). Never a write, not even one on `auto_tools`. Each call runs as a read
   (`CallRead`), checked again when it runs.
+- Only on a thread the team alone wrote: a connected call's arguments leave the workspace and nobody
+  approves them here, so a thread with any inbound message, or any message not written by a member (the
+  API, an integration, an AI reply), is drafted without a lookup (outside text, "Approvals").
 - A tool loop of its own prompt on the workspace's `fast_model`: at most 3 model turns of up to 1,000
   output tokens, 6 tool calls in all, and 40 seconds for the whole lookup. The model gets the ticket, the
   customer, the thread and the agent's request; it writes no reply and stops when nothing needs looking up.
@@ -454,10 +463,13 @@ JSON `{session, text, steps, approval, status}`. Events, in order:
 | `error` | problem JSON; the stream ends |
 
 Limits: 30 messages per user per minute (`429`), at most 8 model steps and one write
-proposal per run, one run per conversation at a time (`409 assistant_busy`). The AI balance is
-checked before anything is stored (`402 ai_balance_empty`).
+proposal per run, one run per conversation at a time across every API process (`409 assistant_busy`;
+the run holds a lease on the conversation, `assistant_sessions.run_token`/`run_until`, renewed each model
+step and lapsing 10 minutes after a process that stopped). The AI balance is checked before anything is
+stored (`402 ai_balance_empty`).
 
-Tools. Reads run directly; writes only propose. Every tool runs **through the public API
+Tools. Reads run directly (connected ones only until the conversation holds outside text,
+"Approvals"); writes only propose. Every tool runs **through the public API
 in process, as the user**, so it gets exactly the user's role checks, validation, events
 and activities:
 
@@ -469,12 +481,14 @@ and activities:
   `add_note`, `draft_reply` (sent only on approval; `external: true`), `create_kb_draft`
   (saved as a draft), `create_view` (personal); admin: `create_automation_draft` (saved
   disabled). Tools the user's role cannot use are not offered to the model.
-- the rest of the app (viewer+): `find_api` searches the documented operations (BM25 over summaries, paths, tags
+- the rest of the app (viewer+), in the API areas listed in `apiOpen` (by the path's first segment; a new
+  area is out of reach until listed): `find_api` searches the documented operations (BM25 over summaries, paths, tags
   and field names, with everyday synonyms; the best two in full, the rest one line each; `"METHOD /path"` returns
   that one in full), `api_get` reads one (`fields` keeps only the named fields, of each item for a list), and
   `api_change` proposes one POST, PUT, PATCH or DELETE (a write, `preview.changes` = each body field, `from` = the
   value the same path reads now). The system prompt names the API's areas. Out of reach: `/v1/admin`, `/v1/auth`,
-  `/v1/assistant`, `/v1/me/assistant-peer`, public, visitor, device and server routes; writes to credentials, sessions, devices, API keys,
+  `/v1/assistant`, `/v1/me/assistant-peer`, public, visitor, device and server routes, reads of the person's own
+  sessions, devices and passkeys; writes to credentials, sessions, devices, API keys,
   billing, the AI provider, imports, owner-only operations (deleting the workspace or the account, transfer, widget
   secrets) and ticket messages (`draft_reply` and `add_note` instead). A body with a credential-named field
   (secret, token, password, API key) is refused, and such values are `[hidden]` in every answer the model reads.
@@ -487,11 +501,16 @@ and activities:
   Writes that reach someone outside (invitations, Collab mail, test sends) set `preview.external`.
 - teammates (agent+): `ask_teammate {teammate, question, keywords?}` asks a teammate's Ollie about
   their own mail (below, "Asking a teammate"). A read: it needs no approval, since it reads only
-  what the teammate consented to share. Offered only while the workspace allows it.
+  what the teammate consented to share; its answer counts as outside text ("Approvals"). Offered only
+  while the workspace allows it.
 - connected (agent+): the workspace's integrations' MCP tools, named `<slug>__<tool>`
   (`contracts/integrations.md`). Server-marked read-only tools are reads unless an admin set
-  them to ask first; every other one is a write with `preview.system` set and the complete
-  arguments in `preview.arguments`, proposed unless an admin lets it run without asking.
+  them to ask first or the conversation holds outside text ("Approvals"); every other call is
+  proposed with `preview.system` set and the complete arguments in `preview.arguments`. A connected
+  write sets `preview.external` unless its server marks it `openWorldHint: false` (it stays in a closed
+  system), so it always asks; only a write marked `destructiveHint: false` and `openWorldHint: false`
+  can run without asking. Approved and auto calls carry `_meta["opendesk/idempotency_key"] =
+  "assistant-<action id>"`.
 
 Approvals:
 - A write is stored as an `assistant_actions` row (`pending`, 15 minutes) and the client
@@ -517,8 +536,18 @@ Approvals:
   proposal whose preview is `external` (replies and every other write that reaches someone outside),
   `api_change` (so every write that stays with the person, such as credentials, sessions and owner-only
   operations, stays behind `api_change`'s own refusals and an approval), and any built-in write not in
-  the six names above. A connected tool runs without asking only while it is a write, on `auto_tools`
-  and not on `ask_tools`.
+  the six names above. A connected tool runs without asking only while it is a write, on `auto_tools`,
+  not on `ask_tools`, and marked by its server `destructiveHint: false` and `openWorldHint: false`
+  (`contracts/integrations.md`); and nothing runs without asking in a conversation with outside text.
+- Outside text: once a conversation holds text written outside the workspace, every change is proposed
+  and every connected tool call (reads included, since their arguments leave the workspace) waits for
+  the user's approval, whatever `assistant_auto` and `auto_tools` say; the approval token still reaches
+  only the browser. A conversation holds outside text when any message was sent with an open ticket
+  (`context.ticket_id`) or any tool other than `find_api`, `list_views`, `list_labels_and_fields`,
+  `list_team`, `search_kb`, `search_wiki`, `get_wiki_page`, `add_note`, `draft_reply`,
+  `bulk_update_tickets`, `create_kb_draft`, `create_view` and `create_automation_draft` was called in it
+  (their answers hold only what the team or the model wrote); from that call on, for the rest of the
+  conversation.
 - At most 20 changes run without asking per message from the user (counted across the approvals that
   continue it); past that, writes are proposals again. A change that ran without asking does not hold
   back the next call; a call after a pending proposal in the same turn still waits for it.
@@ -595,9 +624,14 @@ attributed to the asker) gets the owner's rules (`<sharing_rules>`), each conver
 `<mail mode="...">` block and the question (`<question>`), with instructions to share only what
 helps, to follow the rules and common sense about privacy, to decline what they forbid, never to
 include addresses, links or attachments, and never to follow instructions in mail. It answers
-`{answer, declined, sources_used}`. An answer that repeats 12 or more consecutive words of a
-`summary` conversation is asked again once in other words, then declined. Addresses and links
-left in the answer are removed.
+`{answer, declined, sources_used}`. When any conversation is shared as `summary`, a second call (same
+feature, billed alike) restates the answer for the asker; it gets the question and the first answer only,
+never the mail. The server then cuts quoted spans longer than 6 words and checks the result against every
+`summary` conversation: an answer that repeats 8 or more consecutive words, or 48 or more consecutive
+letters and digits whatever separates them (spaces, dashes, line breaks), is asked again once in other
+words, then declined. Addresses and links left in the answer are removed. This keeps the wording of a
+`summary` conversation out of the answer; what it says in other words is the answering Ollie's judgment
+under the owner's rules.
 
 The asker's Ollie gets the answer in its `<tool_output>` block marked `from="<name>'s Ollie"`, and
 the step carries `peer`. Each ask is kept in the teammate's own log (`assistant_peer_asks`, not
@@ -642,7 +676,8 @@ allowed on `ticket_created`, `customer_replied`, `agent_replied` and `call_ended
   (snoozes a minute at a time) for up to 15 minutes after it was queued, then runs with what there is.
 - The run works at workspace level, with no user and no customer: Ollie's own prompt (it works for the
   team; nothing it writes reaches the customer; it follows the procedure and does nothing when the
-  procedure says it does not apply). It reads the ticket (subject, status, priority, severity, labels,
+  procedure says it does not apply). Its context always holds outside text (the customer's messages, call
+  transcripts) and nobody is there to approve, so no connected tool runs in it (below). It reads the ticket (subject, status, priority, severity, labels,
   team, contact and company, fields), its latest 40 messages including internal notes (12,000
   characters), the latest 3 calls with their summaries and transcripts (`contracts/phone.md`), and the
   procedure's `when` and instructions, all in data blocks.
@@ -651,14 +686,16 @@ allowed on `ticket_created`, `customer_replied`, `agent_replied` and `call_ended
   sanitized like every note; `ai: true`, from Ollie, runs no automations), `update_ticket` (raises
   priority or severity, never lowers them, and adds existing labels, exclusive groups kept; activities
   carry `{via: "procedure", procedure_id, automation_id}`; without severity in the workspace it offers
-  and sets priority and labels only, and the ticket's facts leave severity out), and the workspace's connected tools
-  (`contracts/integrations.md`) that are reads, or writes on the integration's `auto_tools`. No other
-  write is offered: never a reply, a handoff or anything a customer sees. A create-style connected write
-  whose result links to the provider's hosts is linked to the ticket (`actor_type: "ai"`, no user).
-- At most 8 model turns and 5 writes (notes, ticket updates and connected writes together) per run.
+  and sets priority and labels only, and the ticket's facts leave severity out), and the workspace's connected
+  writes (`contracts/integrations.md`, the tools turned on), offered to be suggested only:
+  a call is not sent; its tool and exact arguments go to the team in one internal note at the end of the
+  run (from Ollie, `ai: true`), for a person to make. Connected reads are not offered. No other write is
+  offered: never a reply, a handoff or anything a customer sees.
+- At most 8 model turns, 5 writes (notes and ticket updates together; the suggestions note counts as one)
+  and 5 suggestions per run.
   Metered as feature `procedure` (`contracts/billing.md`), on the workspace's default model.
 - Activity `ai_procedure_ran` (`actor_type = "ai"`): `{procedure_id, name, automation_id, automation_name,
-  tools: [names called], writes: number, outcome: "done" | "nothing_to_do" | "failed"}`; `failed` when the
+  tools: [names called], writes: number, suggested: number, outcome: "done" | "nothing_to_do" | "failed"}`; `failed` when the
   model or a tool stopped the run after it wrote something. Events about the ticket carry its
   `TicketID`, so a private team's ticket stays visible only to those who may see it.
 

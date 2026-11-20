@@ -16,6 +16,7 @@ import { Select } from "@/components/ui/select";
 import { Segmented } from "@/components/ui/tabs";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "@/components/ui/toast";
+import { useConfirm } from "@/components/ui/confirm";
 import { api } from "@/lib/api/endpoints";
 import type { McpAuthInput, McpAuthKind, McpServer, McpTool, McpToolResult } from "@/lib/api/types";
 import { qk } from "@/lib/queries";
@@ -211,9 +212,10 @@ export function ToolTest({ server, tool }: { server: McpServer; tool: McpTool })
   const [mode, setMode] = useState<"form" | "json">(fields ? "form" : "json");
   const [values, setValues] = useState<Record<string, string | boolean>>({});
   const [raw, setRaw] = useState(() => JSON.stringify(fields ? {} : exampleArgs(tool.input_schema), null, 2));
-  const [verified, setVerified] = useState(false);
-  const [email, setEmail] = useState("");
   const [result, setResult] = useState<McpToolResult | null>(null);
+  const confirm = useConfirm();
+  // A tool that needs confirmation runs only when the admin confirms it (contracts/agent.md).
+  const needsConfirm = !tool.read_only || tool.policy === "confirm";
 
   let args: Record<string, unknown> | null = null;
   let jsonError: string | null = null;
@@ -230,14 +232,14 @@ export function ToolTest({ server, tool }: { server: McpServer; tool: McpTool })
   const missing = mode === "form" && fields ? fields.filter((f) => f.required && args?.[f.name] === undefined).map((f) => f.name) : [];
 
   const run = useMutation({
-    mutationFn: () =>
-      api.ai.mcp.testTool(server.id, tool.name, {
-        arguments: args ?? {},
-        visitor: verified || email.trim() ? { verified, email: email.trim() || undefined } : undefined,
-      }),
+    mutationFn: () => api.ai.mcp.testTool(server.id, tool.name, { arguments: args ?? {}, confirm: needsConfirm || undefined }),
     onSuccess: setResult,
     onError: (e) => toast.error(e, t("tools.test.error")),
   });
+  const start = () => {
+    if (!needsConfirm) return run.mutate();
+    confirm.show(t("tools.test.confirmText"), () => run.mutateAsync(), { title: t("tools.test.confirmTitle"), confirmLabel: t("tools.test.confirmRun"), danger: tool.destructive });
+  };
 
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-line bg-sunken p-3">
@@ -323,19 +325,7 @@ export function ToolTest({ server, tool }: { server: McpServer; tool: McpTool })
         </Field>
       )}
       <div className="flex flex-wrap items-center gap-3 border-t border-line-soft pt-3">
-        <TextInput
-          inputSize="sm"
-          type="email"
-          className="w-[200px]"
-          placeholder={t("tools.test.visitorEmail")}
-          aria-label={t("tools.test.visitorEmail")}
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-        />
-        <label className="flex items-center gap-2 text-[12px] text-fg-2">
-          <Switch checked={verified} onCheckedChange={setVerified} aria-label={t("tools.test.verified")} />
-          {t("tools.test.verified")}
-        </label>
+        <p className="min-w-0 flex-1 text-[11.5px] text-fg-3">{t("tools.test.testCall")}</p>
         <Button
           variant="primary"
           size="sm"
@@ -343,7 +333,7 @@ export function ToolTest({ server, tool }: { server: McpServer; tool: McpTool })
           icon={<Play className="size-3" />}
           loading={run.isPending}
           disabled={!args || missing.length > 0}
-          onClick={() => run.mutate()}
+          onClick={start}
         >
           {t("tools.test.run")}
         </Button>

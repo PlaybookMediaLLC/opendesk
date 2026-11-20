@@ -75,7 +75,7 @@ The token is bound to the action, the user, the sign-in session and the workspac
 
 An approved change goes through the regular API with the user's permissions. Ticket activities record it with `actor_type: "ai"` and the user in `actor.user`, shown as Ollie, and the audit log records `assistant.action`.
 
-A change the workspace lets run without asking (`settings.ai.assistant_auto` for the built-in ones, an integration's `auto_tools` for connected ones) sends no `approval` event: it runs on the same path straight away, and its step ends `done` with `auto: true` and the `preview` of what it ran. The audit entry carries `data.auto: true`. A reply or anything else marked `external`, and every `api_change`, always asks. At most 20 changes run this way for one message.
+A change the workspace lets run without asking (`settings.ai.assistant_auto` for the built-in ones, an integration's `auto_tools` for connected ones) sends no `approval` event: it runs on the same path straight away, and its step ends `done` with `auto: true` and the `preview` of what it ran. The audit entry carries `data.auto: true`. A reply or anything else marked `external` (every connected write its server does not mark `openWorldHint: false`), and every `api_change`, always asks. Once the conversation holds text from outside the workspace (a message sent from a ticket, or a call of a tool whose answer comes from outside, such as `get_ticket`, `api_get` or a connected tool), nothing runs without asking and every connected call, reads included, is proposed. At most 20 changes run this way for one message.
 
 ## Tips
 

@@ -151,6 +151,24 @@ func renderThread(msgs []domain.Message, summary string, budget int) string {
 	return block("ticket_thread", []string{"messages", strconv.Itoa(len(msgs))}, strings.Join(parts, "\n"))
 }
 
+// OutsideText reports whether a ticket's thread holds text written outside the workspace:
+// any inbound message, or any message not written by a member (an API, an integration, the
+// AI writing from what a customer said). Runs over such a thread propose their changes and
+// connected calls to a person instead of running them (contracts/ai.md "Approvals").
+func OutsideText(msgs []domain.Message) bool {
+	for _, m := range msgs {
+		if m.Direction == "inbound" || m.Author.Type != "user" || m.AI {
+			return true
+		}
+	}
+	return false
+}
+
+// RenderThread renders a ticket's messages for a model: each message its own data block
+// with who wrote it (customer, agent, internal note, ...) set by the application, so text
+// inside a message cannot pass for another speaker. budget bounds the characters.
+func RenderThread(msgs []domain.Message, budget int) string { return renderThread(msgs, "", budget) }
+
 // lastCustomerText is the latest customer message, for retrieval queries.
 func lastCustomerText(msgs []domain.Message) string {
 	for i := len(msgs) - 1; i >= 0; i-- {

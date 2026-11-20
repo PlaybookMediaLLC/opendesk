@@ -49,14 +49,11 @@ type Service struct {
 	apiOps  []apiOp
 	apiIDF  map[string]float64
 	apiAvg  float64
-
-	mu      sync.Mutex
-	running map[uuid.UUID]bool
 }
 
 // New builds the service. api is the public API handler the tools call.
 func New(d *deps.Deps, svc *ai.Service, api http.Handler) *Service {
-	s := &Service{d: d, ai: svc, api: api, tools: map[string]*tool{}, running: map[uuid.UUID]bool{}}
+	s := &Service{d: d, ai: svc, api: api, tools: map[string]*tool{}}
 	for _, t := range append(append(append(readTools(), writeTools()...), apiTools()...), peerTools()...) {
 		s.tools[t.Name] = t
 		s.order = append(s.order, t)
@@ -74,21 +71,48 @@ func RegisterWorkers(*deps.Deps, *river.Workers) {}
 func Periodic(*deps.Deps) []*river.PeriodicJob   { return nil }
 func Background(context.Context, *deps.Deps)     {}
 
-// begin marks a session as running; only one run per conversation at a time.
-func (s *Service) begin(id uuid.UUID) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.running[id] {
-		return false
+// runLease is how long a run holds its conversation without renewing the claim; each model
+// turn renews it.
+const runLease = 10 * time.Minute
+
+// begin claims a conversation for one run, across every API process: only one run per
+// conversation at a time (errBusy otherwise). The claim is a lease on the session row
+// (run_token, run_until); one left by a process that stopped lapses after runLease.
+func (s *Service) begin(ctx context.Context, wid, sid uuid.UUID) (uuid.UUID, error) {
+	tok := uuid.New()
+	tag, err := s.d.DB.Pool.Exec(ctx, `UPDATE assistant_sessions SET run_token = $3, run_until = now() + $4::int * interval '1 second'
+		WHERE workspace_id = $1 AND id = $2 AND (run_until IS NULL OR run_until < now())`, wid, sid, tok, int(runLease/time.Second))
+	if err != nil {
+		return uuid.Nil, httpx.Wrap(err)
 	}
-	s.running[id] = true
-	return true
+	if tag.RowsAffected() == 0 {
+		return uuid.Nil, errBusy
+	}
+	return tok, nil
 }
 
-func (s *Service) end(id uuid.UUID) {
-	s.mu.Lock()
-	delete(s.running, id)
-	s.mu.Unlock()
+// renew extends the run's lease; a run whose lease another run took stops (errBusy).
+func (s *Service) renew(ctx context.Context, rc *runCtx) error {
+	if rc.lease == uuid.Nil {
+		return nil
+	}
+	tag, err := s.d.DB.Pool.Exec(ctx, `UPDATE assistant_sessions SET run_until = now() + $4::int * interval '1 second'
+		WHERE workspace_id = $1 AND id = $2 AND run_token = $3`, rc.p.WorkspaceID, rc.sid, rc.lease, int(runLease/time.Second))
+	if err != nil {
+		return httpx.Wrap(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return errBusy
+	}
+	return nil
+}
+
+// end gives the conversation back, even when the request went away.
+func (s *Service) end(ctx context.Context, wid, sid, tok uuid.UUID) {
+	if _, err := s.d.DB.Pool.Exec(context.WithoutCancel(ctx), `UPDATE assistant_sessions SET run_token = NULL, run_until = NULL
+		WHERE workspace_id = $1 AND id = $2 AND run_token = $3`, wid, sid, tok); err != nil {
+		s.d.Log.Warn("assistant run lease", "err", err)
+	}
 }
 
 // require checks the caller may use the assistant: a signed-in member (API keys do not

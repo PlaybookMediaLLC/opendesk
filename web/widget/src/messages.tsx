@@ -242,6 +242,23 @@ export function ActionCard({ a, ui, onDecide }: { a: AIAction; ui: ActionUi | un
       </div>
       <div class="action-title">{a.title}</div>
       {a.summary && <div class="action-sum">{a.summary}</div>}
+      {/* What actually runs: the call's own arguments, so the visitor confirms those, not only the summary. */}
+      {!!a.fields?.length && (
+        <dl class="action-fields">
+          {a.fields.map((f, i) => (
+            <div key={i}>
+              <dt>{f.label}</dt>
+              <dd>{f.value}</dd>
+            </div>
+          ))}
+          {!!a.omitted && (
+            <div>
+              <dt>…</dt>
+              <dd>+{a.omitted}</dd>
+            </div>
+          )}
+        </dl>
+      )}
       <div class="action-btns" data-open={status === "pending" ? "" : undefined}>
         <div>
           <button class="btn ghost" disabled={!!busy || status !== "pending"} aria-busy={busy === "decline"} onClick={() => onDecide("decline")}>

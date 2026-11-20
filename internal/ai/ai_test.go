@@ -786,3 +786,76 @@ func TestTriageRespectsExclusiveGroups(t *testing.T) {
 		t.Fatalf("untagged activities %d", n)
 	}
 }
+
+// TestBalanceHolds: a call holds its estimate until it is charged, so concurrent calls cannot
+// spend the same balance; a hold ends when charged, released or lapsed.
+func TestBalanceHolds(t *testing.T) {
+	e := newEnv(t, opts{billing: true})
+	p, pool, wid := e.D.Plan, e.D.DB.Pool, e.WS.ID
+	if err := plan.Ensure(e.Ctx, pool, wid); err != nil {
+		t.Fatal(err)
+	}
+	// $0.05 left.
+	e.Exec(`UPDATE ai_balances SET included_used_micro_usd = $2, purchased_micro_usd = 0 WHERE workspace_id = $1`, wid, plan.FreeMonthlyUSD-50_000)
+	h1, err := p.Hold(e.Ctx, pool, wid, 30_000)
+	if err != nil || h1 == uuid.Nil {
+		t.Fatalf("first hold %v %v", h1, err)
+	}
+	if _, err := p.Hold(e.Ctx, pool, wid, 30_000); !errors.Is(err, plan.ErrNoBalance) {
+		t.Fatalf("second hold: %v", err)
+	}
+	if err := p.Reserve(e.Ctx, pool, wid, 30_000); !errors.Is(err, plan.ErrNoBalance) {
+		t.Fatalf("check while held: %v", err)
+	}
+	if err := p.Release(e.Ctx, pool, h1); err != nil {
+		t.Fatal(err)
+	}
+	h2, err := p.Hold(e.Ctx, pool, wid, 30_000)
+	if err != nil {
+		t.Fatalf("after release: %v", err)
+	}
+	if _, err := p.Spend(e.Ctx, pool, wid, plan.Usage{Feature: "summarize", Model: "m", CostUSD: 0.001, Hold: h2}); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.count(`SELECT count(*) FROM ai_balance_holds WHERE workspace_id = $1`, wid); n != 0 {
+		t.Fatalf("holds after the charge %d", n)
+	}
+	// A hold whose call never finished lapses.
+	e.Exec(`INSERT INTO ai_balance_holds (workspace_id, micro_usd, expires_at) VALUES ($1, 1000000, now() - interval '1 second')`, wid)
+	if _, err := p.Hold(e.Ctx, pool, wid, 10_000); err != nil {
+		t.Fatalf("a lapsed hold still counted: %v", err)
+	}
+}
+
+// TestStoppedStreamIsCharged: a call that delivered output before it failed is charged for
+// that output; one that delivered nothing costs nothing and gives its hold back.
+func TestStoppedStreamIsCharged(t *testing.T) {
+	e := newEnv(t, opts{billing: true})
+	if err := plan.Ensure(e.Ctx, e.D.DB.Pool, e.WS.ID); err != nil {
+		t.Fatal(err)
+	}
+	c := e.S.newCall(e.WS.ID, nil, nil, "draft_reply")
+	model := c.resolveModel(e.Ctx, "")
+	if err := c.reserve(e.Ctx, model, 1000, 500); err != nil {
+		t.Fatal(err)
+	}
+	c.chargePartial(e.Ctx, model, 1000, 400)
+	if n := e.count(`SELECT count(*) FROM ai_usage WHERE workspace_id = $1 AND feature = 'draft_reply' AND input_tokens = 1000 AND output_tokens = 100`, e.WS.ID); n != 1 {
+		t.Fatalf("usage rows %d", n)
+	}
+	c.charge(e.Ctx) // charged once
+	if n := e.count(`SELECT count(*) FROM ai_usage WHERE workspace_id = $1`, e.WS.ID); n != 1 {
+		t.Fatalf("charged twice: %d", n)
+	}
+	c2 := e.S.newCall(e.WS.ID, nil, nil, "draft_reply")
+	if err := c2.reserve(e.Ctx, model, 1000, 500); err != nil {
+		t.Fatal(err)
+	}
+	c2.chargePartial(e.Ctx, model, 1000, 0)
+	if n := e.count(`SELECT count(*) FROM ai_usage WHERE workspace_id = $1`, e.WS.ID); n != 1 {
+		t.Fatalf("a call with no output was charged: %d", n)
+	}
+	if n := e.count(`SELECT count(*) FROM ai_balance_holds WHERE workspace_id = $1`, e.WS.ID); n != 0 {
+		t.Fatalf("holds left %d", n)
+	}
+}

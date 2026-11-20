@@ -66,6 +66,9 @@ type rpcMessage struct {
 	} `json:"error,omitempty"`
 }
 
+// IdempotencyMeta is the _meta key of a write's idempotency key.
+const IdempotencyMeta = "opendesk/idempotency_key"
+
 // RemoteTool is a tool as a server lists it.
 type RemoteTool struct {
 	Name        string          `json:"name"`
@@ -76,6 +79,7 @@ type RemoteTool struct {
 		Title           string `json:"title,omitempty"`
 		ReadOnlyHint    *bool  `json:"readOnlyHint,omitempty"`
 		DestructiveHint *bool  `json:"destructiveHint,omitempty"`
+		OpenWorldHint   *bool  `json:"openWorldHint,omitempty"`
 	} `json:"annotations,omitempty"`
 }
 
@@ -274,10 +278,19 @@ func (s *session) ListTools(ctx context.Context) ([]RemoteTool, error) {
 
 // CallTool runs one tool.
 func (s *session) CallTool(ctx context.Context, name string, args json.RawMessage) (*CallResult, error) {
+	return s.CallToolKeyed(ctx, name, args, "")
+}
+
+// CallToolKeyed is CallTool with an idempotency key in _meta ("opendesk/idempotency_key"),
+// the same for every attempt of one change, so a server can recognise a repeated write.
+func (s *session) CallToolKeyed(ctx context.Context, name string, args json.RawMessage, key string) (*CallResult, error) {
 	if len(args) == 0 {
 		args = json.RawMessage(`{}`)
 	}
 	params := map[string]any{"name": name, "arguments": args}
+	if key != "" {
+		params["_meta"] = map[string]any{IdempotencyMeta: key}
+	}
 	var raw json.RawMessage
 	var err error
 	if s.isLegacy() {

@@ -24,11 +24,17 @@ import (
 )
 
 // Visitor is who the agent is talking to. Only a verified session's UserID and Email
-// are sent to MCP servers.
+// are sent to MCP servers, and never on a test call.
 type Visitor struct {
 	Verified                  bool
 	UserID, Email, Name       string
 	ContactID, ConversationID uuid.UUID
+	// Test marks a call from the playground, an agent test run or the tool test route:
+	// _meta carries "opendesk/test": true and the visitor is never verified.
+	Test bool
+	// IdempotencyKey is sent in _meta ("opendesk/idempotency_key") with every attempt of a
+	// confirmed action's call.
+	IdempotencyKey string
 }
 
 // Tool is one enabled tool of an enabled, connected server, as offered to the agent.
